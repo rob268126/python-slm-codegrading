@@ -1,0 +1,574 @@
+[
+  {
+    "sample_id": "EX01-S101",
+    "task1": {
+      "rubric": {
+        "compilable": 1,
+        "io_format": 0,
+        "logic": 0,
+        "edge_case": 0,
+        "complexity": 0,
+        "code_quality": 0
+      },
+      "total": 1
+    },
+    "task2": {
+      "errors": []
+    }
+  },
+  {
+    "sample_id": "EX01-S102",
+    "task1": {
+      "rubric": {
+        "compilable": 1,
+        "io_format": 0,
+        "logic": 0,
+        "edge_case": 0,
+        "complexity": 0,
+        "code_quality": 0
+      },
+      "total": 1
+    },
+    "task2": {
+      "errors": []
+    }
+  },
+  {
+    "sample_id": "EX01-S103",
+    "task1": {
+      "rubric": {
+        "compilable": 0,
+        "io_format": 0,
+        "logic": 0,
+        "edge_case": 0,
+        "complexity": 0,
+        "code_quality": 0
+      },
+      "total": 0
+    },
+    "task2": {
+      "errors": [
+        "Lỗi biên dịch"
+      ]
+    }
+  },
+  {
+    "sample_id": "EX01-S104",
+    "task1": {
+      "rubric": {
+        "compilable": 1,
+        "io_format": 0,
+        "logic": 4,
+        "edge_case": 2,
+        "complexity": 1,
+        "code_quality": 1
+      },
+      "total": 9
+    },
+    "task2": {
+      "errors": []
+    }
+  },
+  {
+    "sample_id": "EX01-S105",
+    "task1": {
+      "rubric": {
+        "compilable": 0,
+        "io_format": 0,
+        "logic": 0,
+        "edge_case": 0,
+        "complexity": 0,
+        "code_quality": 0
+      },
+      "total": 0
+    },
+    "task2": {
+      "errors": [
+        "Lỗi biên dịch",
+        "Lỗi cú pháp"
+      ]
+    }
+  },
+  {
+    "sample_id": "EX01-S106",
+    "task1": {
+      "rubric": {
+        "compilable": 1,
+        "io_format": 0,
+        "logic": 5,
+        "edge_case": 2,
+        "complexity": 1,
+        "code_quality": 1
+      },
+      "total": 10
+    },
+    "task2": {
+      "errors": []
+    }
+  },
+  {
+    "sample_id": "EX01-S107",
+    "task1": {
+      "rubric": {
+        "compilable": 1,
+        "io_format": 0,
+        "logic": 0,
+        "edge_case": 0,
+        "complexity": 0,
+        "code_quality": 0
+      },
+      "total": 1
+    },
+    "task2": {
+      "errors": []
+    }
+  },
+  {
+    "sample_id": "EX01-S108",
+    "task1": {
+      "rubric": {
+        "compilable": 0,
+        "io_format": 0,
+        "logic": 0,
+        "edge_case": 0,
+        "complexity": 0,
+        "code_quality": 0
+      },
+      "total": 0
+    },
+    "task2": {
+      "errors": [
+        "Lỗi biên dịch",
+        "Không có lỗi"
+      ]
+    }
+  },
+  {
+    "sample_id": "EX01-S109",
+    "task1": {
+      "rubric": {
+        "compilable": 0,
+        "io_format": 0,
+        "logic": 0,
+        "edge_case": 0,
+        "complexity": 0,
+        "code_quality": 0
+      },
+      "total": 0
+    },
+    "task2": {
+      "errors": [
+        "Lỗi biên dịch",
+        "Lỗi cú pháp"
+      ]
+    }
+  },
+  {
+    "sample_id": "EX01-S110",
+    "task1": {
+      "rubric": {
+        "compilable": 1,
+        "io_format": 0,
+        "logic": 0,
+        "edge_case": 0,
+        "complexity": 0,
+        "code_quality": 0
+      },
+      "total": 1
+    },
+    "task2": {
+      "errors": []
+    }
+  },
+  {
+    "sample_id": "EX01-S111",
+    "task1": {
+      "rubric": {
+        "compilable": 0,
+        "io_format": 0,
+        "logic": 0,
+        "edge_case": 0,
+        "complexity": 0,
+        "code_quality": 0
+      },
+      "total": 0
+    },
+    "task2": {
+      "errors": [
+        "Lỗi biên dịch",
+        "Không có lỗi"
+      ]
+    }
+  },
+  {
+    "sample_id": "EX01-S112",
+    "task1": {
+      "rubric": {
+        "compilable": 1,
+        "io_format": 0,
+        "logic": 0,
+        "edge_case": 0,
+        "complexity": 0,
+        "code_quality": 0
+      },
+      "total": 1
+    },
+    "task2": {
+      "errors": []
+    }
+  },
+  {
+    "sample_id": "EX01-S113",
+    "task1": {
+      "rubric": {
+        "compilable": 1,
+        "io_format": 0,
+        "logic": 0,
+        "edge_case": 0,
+        "complexity": 0,
+        "code_quality": 0
+      },
+      "total": 1
+    },
+    "task2": {
+      "errors": []
+    }
+  },
+  {
+    "sample_id": "EX01-S114",
+    "task1": {
+      "rubric": {
+        "compilable": 0,
+        "io_format": 0,
+        "logic": 0,
+        "edge_case": 0,
+        "complexity": 0,
+        "code_quality": 0
+      },
+      "total": 0
+    },
+    "task2": {
+      "errors": [
+        "Lỗi biên dịch",
+        "Lỗi xử lý biên"
+      ]
+    }
+  },
+  {
+    "sample_id": "EX01-S115",
+    "task1": {
+      "rubric": {
+        "compilable": 1,
+        "io_format": 0,
+        "logic": 0,
+        "edge_case": 0,
+        "complexity": 0,
+        "code_quality": 0
+      },
+      "total": 1
+    },
+    "task2": {
+      "errors": []
+    }
+  },
+  {
+    "sample_id": "EX02-S201",
+    "task1": {
+      "rubric": {
+        "compilable": 1,
+        "io_format": 1,
+        "logic": 4,
+        "edge_case": 2,
+        "complexity": 1,
+        "code_quality": 1
+      },
+      "total": 10
+    },
+    "task2": {
+      "errors": []
+    }
+  },
+  {
+    "sample_id": "EX02-S202",
+    "task1": {
+      "rubric": {
+        "compilable": 1,
+        "io_format": 1,
+        "logic": 4,
+        "edge_case": 2,
+        "complexity": 1,
+        "code_quality": 1
+      },
+      "total": 10
+    },
+    "task2": {
+      "errors": []
+    }
+  },
+  {
+    "sample_id": "EX02-S203",
+    "task1": {
+      "rubric": {
+        "compilable": 0,
+        "io_format": 0,
+        "logic": 0,
+        "edge_case": 0,
+        "complexity": 0,
+        "code_quality": 0
+      },
+      "total": 0
+    },
+    "task2": {
+      "errors": [
+        "Lỗi biên dịch",
+        "Lỗi cú pháp"
+      ]
+    }
+  },
+  {
+    "sample_id": "EX02-S204",
+    "task1": {
+      "rubric": {
+        "compilable": 1,
+        "io_format": 1,
+        "logic": 4,
+        "edge_case": 2,
+        "complexity": 1,
+        "code_quality": 1
+      },
+      "total": 10
+    },
+    "task2": {
+      "errors": []
+    }
+  },
+  {
+    "sample_id": "EX02-S205",
+    "task1": {
+      "rubric": {
+        "compilable": 1,
+        "io_format": 1,
+        "logic": 4,
+        "edge_case": 2,
+        "complexity": 1,
+        "code_quality": 1
+      },
+      "total": 10
+    },
+    "task2": {
+      "errors": []
+    }
+  },
+  {
+    "sample_id": "EX02-S206",
+    "task1": {
+      "rubric": {
+        "compilable": 1,
+        "io_format": 0,
+        "logic": 0,
+        "edge_case": 0,
+        "complexity": 0,
+        "code_quality": 0
+      },
+      "total": 1
+    },
+    "task2": {
+      "errors": []
+    }
+  },
+  {
+    "sample_id": "EX02-S207",
+    "task1": {
+      "rubric": {
+        "compilable": 1,
+        "io_format": 1,
+        "logic": 4,
+        "edge_case": 2,
+        "complexity": 1,
+        "code_quality": 1
+      },
+      "total": 10
+    },
+    "task2": {
+      "errors": []
+    }
+  },
+  {
+    "sample_id": "EX02-S208",
+    "task1": {
+      "rubric": {
+        "compilable": 1,
+        "io_format": 0,
+        "logic": 0,
+        "edge_case": 0,
+        "complexity": 0,
+        "code_quality": 0
+      },
+      "total": 1
+    },
+    "task2": {
+      "errors": []
+    }
+  },
+  {
+    "sample_id": "EX02-S209",
+    "task1": {
+      "rubric": {
+        "compilable": 1,
+        "io_format": 0,
+        "logic": 0,
+        "edge_case": 0,
+        "complexity": 0,
+        "code_quality": 0
+      },
+      "total": 1
+    },
+    "task2": {
+      "errors": []
+    }
+  },
+  {
+    "sample_id": "EX02-S210",
+    "task1": {
+      "rubric": {
+        "compilable": 1,
+        "io_format": 0,
+        "logic": 0,
+        "edge_case": 0,
+        "complexity": 0,
+        "code_quality": 0
+      },
+      "total": 1
+    },
+    "task2": {
+      "errors": []
+    }
+  },
+  {
+    "sample_id": "EX02-S211",
+    "task1": {
+      "rubric": {
+        "compilable": 1,
+        "io_format": 1,
+        "logic": 4,
+        "edge_case": 2,
+        "complexity": 1,
+        "code_quality": 1
+      },
+      "total": 10
+    },
+    "task2": {
+      "errors": []
+    }
+  },
+  {
+    "sample_id": "EX02-S212",
+    "task1": {
+      "rubric": {
+        "compilable": 0,
+        "io_format": 0,
+        "logic": 0,
+        "edge_case": 0,
+        "complexity": 0,
+        "code_quality": 0
+      },
+      "total": 0
+    },
+    "task2": {
+      "errors": [
+        "Lỗi biên dịch",
+        "Không có lỗi"
+      ]
+    }
+  },
+  {
+    "sample_id": "EX02-S213",
+    "task1": {
+      "rubric": {
+        "compilable": 1,
+        "io_format": 1,
+        "logic": 4,
+        "edge_case": 2,
+        "complexity": 1,
+        "code_quality": 1
+      },
+      "total": 10
+    },
+    "task2": {
+      "errors": []
+    }
+  },
+  {
+    "sample_id": "EX02-S214",
+    "task1": {
+      "rubric": {
+        "compilable": 0,
+        "io_format": 0,
+        "logic": 0,
+        "edge_case": 0,
+        "complexity": 0,
+        "code_quality": 0
+      },
+      "total": 0
+    },
+    "task2": {
+      "errors": [
+        "Lỗi biên dịch"
+      ]
+    }
+  },
+  {
+    "sample_id": "EX02-S215",
+    "task1": {
+      "rubric": {
+        "compilable": 1,
+        "io_format": 1,
+        "logic": 4,
+        "edge_case": 2,
+        "complexity": 1,
+        "code_quality": 1
+      },
+      "total": 10
+    },
+    "task2": {
+      "errors": []
+    }
+  },
+  {
+    "sample_id": "EX02-S216",
+    "task1": {
+      "rubric": {
+        "compilable": 1,
+        "io_format": 0,
+        "logic": 0,
+        "edge_case": 0,
+        "complexity": 0,
+        "code_quality": 0
+      },
+      "total": 1
+    },
+    "task2": {
+      "errors": []
+    }
+  },
+  {
+    "sample_id": "EX02-S217",
+    "task1": {
+      "rubric": {
+        "compilable": 0,
+        "io_format": 0,
+        "logic": 0,
+        "edge_case": 0,
+        "complexity": 0,
+        "code_quality": 0
+      },
+      "total": 0
+    },
+    "task2": {
+      "errors": [
+        "Lỗi biên dịch",
+        "Không có lỗi"
+      ]
+    }
+  }
+]
