@@ -188,3 +188,39 @@ class CppGrader:
             result.sample_id = sub.get("sample_id", "")
             results.append(result)
         return results
+
+    def apply_prerequisite_policy(self, results: List[GradingResult], 
+                               submissions: List[dict]) -> List[GradingResult]:
+        """
+        Áp dụng chính sách tiên quyết cho đề multi_problem.
+        Nếu câu trước bị compilable=0 hoặc logic=0, các câu sau cũng = 0.
+        """
+        # Gom nhóm theo exam_id
+        exam_groups = {}
+        for i, result in enumerate(results):
+            exam_id = submissions[i].get("exam_id", "")
+            if exam_id not in exam_groups:
+                exam_groups[exam_id] = []
+            exam_groups[exam_id].append((i, result))
+        
+        # Xử lý từng exam
+        for exam_id, group in exam_groups.items():
+            # Sắp xếp theo thứ tự sample_id (để đảm bảo đúng thứ tự câu)
+            group.sort(key=lambda x: x[1].sample_id)
+            
+            has_failed_prerequisite = False
+            for idx, result in group:
+                # Nếu câu trước đã fail hoặc câu này fail
+                if has_failed_prerequisite or result.rubric.get("compilable", 0) == 0 or result.rubric.get("logic", 0) == 0:
+                    # Ép tất cả về 0
+                    result.rubric = {
+                        "compilable": 0,
+                        "io_format": 0,
+                        "logic": 0,
+                        "edge_case": 0,
+                        "complexity": 0,
+                        "code_quality": 0
+                    }
+                    has_failed_prerequisite = True
+        
+        return results
