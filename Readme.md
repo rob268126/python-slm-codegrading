@@ -89,7 +89,7 @@ python main.py --dataset ./dataset --model-path unsloth/Qwen2.5-Coder-7B-Instruc
 ```
 Task 3
 ```bash
-python main.py --dataset ./dataset --model-path unsloth/Qwen2.5-Coder-7B-Instruct --adapter-path ./models/lora_adapter_v3 --task 2 --split public_test --output-dir ./submission
+python main.py --dataset ./dataset --model-path unsloth/Qwen2.5-Coder-7B-Instruct --adapter-path ./models/lora_adapter_v3 --task 3 --split public_test --output-dir ./submission
 ```
 
 ## Docs
