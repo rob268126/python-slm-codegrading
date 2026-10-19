@@ -19,11 +19,18 @@ prequisition/
 ├── requirements.txt             # Các dependencies Python  
 ├── main.py                      # Pipeline chính điều phối toàn bộ flow  
 ├── dataset/                     # Thư mục chứa dataset (input)  
-│   ├── task1_grading.json  
-│   ├── task2_error_taxonomy.json  
-│   ├── task3_feedback.json  
-│   ├── exams.json  
-│   └── label_space.json  
+│   └── lora_adapter_v3/         # LoRA adapter đã fine-tune  
+│      ├── private_test  
+│      ├── public_test  
+│       ├── task2_error_taxonomy.json  
+│       ├── task3_feedback.json  
+│       ├── exams.json  
+│       └── label_space.json  
+│      ├── train  
+│       ├── task2_error_taxonomy.json  
+│       ├── task3_feedback.json  
+│       ├── exams.json  
+│       └── label_space.json  
 ├── models/                      # Thư mục chứa model weights  
 │   └── lora_adapter_v3/         # LoRA adapter đã fine-tune  
 ├── evaluation/  
@@ -70,6 +77,20 @@ lora_adapter_v3.zip -> models/
 pip install -r requirements.txt
 python main.py --dataset ./dataset/sample_dataset --model-path unsloth/Qwen2.5-Coder-7B-Instruct --adapter-path ./models/lora_adapter_v3 --output predictions.json
 ``` 
+
+## Chạy từng task trên public_test
+Task 1  
+```bash
+python main.py --dataset ./dataset --model-path unsloth/Qwen2.5-Coder-7B-Instruct --adapter-path ./models/lora_adapter_v3 --task 1 --split public_test --output-dir ./submission
+```
+Task 2  
+```bash
+python main.py --dataset ./dataset --model-path unsloth/Qwen2.5-Coder-7B-Instruct --adapter-path ./models lora_adapter_v3 --task 2 --split public_test --output-dir ./submission
+```
+Task 3
+```bash
+python main.py --dataset ./dataset --model-path unsloth/Qwen2.5-Coder-7B-Instruct --adapter-path ./models/lora_adapter_v3 --task 2 --split public_test --output-dir ./submission
+```
 
 ## Docs
 ### 1. main.py -> chạy Pipeline
