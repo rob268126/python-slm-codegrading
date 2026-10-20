@@ -42,34 +42,10 @@ def load_dataset(dataset_root: str, split: str = "train") -> dict:
 
 
 def export_submission(results: List[Dict], task: int, output_dir: str):
-    """Xuất submission JSON đúng format yêu cầu"""
+    """Xuất submission JSON"""
     os.makedirs(output_dir, exist_ok=True)
     
-    submission_data = []
-    for r in results:
-        if task == 1:
-            submission_data.append({
-                "sample_id": r["sample_id"],
-                "output": {
-                    "rubric": r["rubric"],
-                    "total_score": sum(r["rubric"].values())
-                }
-            })
-        elif task == 2:
-            submission_data.append({
-                "sample_id": r["sample_id"],
-                "output": {
-                    "taxonomy_error": r["errors"]
-                }
-            })
-        elif task == 3:
-            submission_data.append({
-                "sample_id": r["sample_id"],
-                "output": {
-                    "taxonomy_error": r["errors"],
-                    "feedback": r["feedback"]
-                }
-            })
+    submission_data = results
     
     output_file = f"task{task}_submission.json"
     output_path = os.path.join(output_dir, output_file)
@@ -81,21 +57,24 @@ def export_submission(results: List[Dict], task: int, output_dir: str):
     return output_path
 
 
-def process_task1(grader: CppGrader, data: dict, split: str) -> List[Dict]:
-    """Xử lý Task 1: Rubric Grading"""
-    print("\n" + "="*60)
-    print(f"TASK 1: RUBRIC GRADING ({split})")
-    
+def build_submissions(data: dict) -> List[Dict]:
+    """Build danh sách submissions dùng chung cho Task 1, 2, 3"""
     task1_data = data.get("task1_grading.json", {})
     samples = task1_data.get("samples", [])
     exams_data = data.get("exams.json", {})
     
-    # Build submissions list
     submissions = []
     for s in samples:
         inp = s["input"]
         code_file = inp.get("code_file", "")
-        code_path = data["submissions_dir"].parent / code_file
+        
+        # Xử lý pat
+        if "submissions_dir" in data:
+            code_path = data["submissions_dir"].parent / code_file
+            if not code_path.exists():
+                code_path = data["submissions_dir"] / pathlib.Path(code_file).name
+        else:
+            code_path = pathlib.Path(code_file)
         
         if not code_path.exists():
             print(f"  File not found: {code_file}")
@@ -104,10 +83,9 @@ def process_task1(grader: CppGrader, data: dict, split: str) -> List[Dict]:
         code = code_path.read_text(encoding="utf-8")
         exam_id = inp.get("exam_id", "")
         
-        # statement từ exams.json
+        # Lấy statement từ exams.json
         statement = ""
-        exam_list = exams_data.get("exams", [])
-        for exam in exam_list:
+        for exam in exams_data.get("exams", []):
             if exam.get("exam_id") == exam_id:
                 statement = exam.get("statement", "")
                 break
@@ -121,39 +99,55 @@ def process_task1(grader: CppGrader, data: dict, split: str) -> List[Dict]:
             "test_report": inp.get("test_report", "")
         })
     
-    # Grade batch
+    return submissions
+
+
+def process_task1(grader: CppGrader, data: dict, split: str) -> List[Dict]:
+    """Task 1: Rubric Grading - tự tính lại total_score"""
+    print("\n" + "#"*60)
+    print(f"TASK 1: RUBRIC GRADING ({split})")
+    
+    submissions = build_submissions(data)
+    
     results = grader.grade_batch(submissions)
-    
-    # Apply prerequisite policy
     results = grader.apply_prerequisite_policy(results, submissions)
-    
-    # Convert to dict
+
     output = []
     for r in results:
+        rubric = r.rubric
+        total_score = sum(
+            rubric.get(d, 0) 
+            for d in ["compilable", "io_format", "logic", "edge_case", "complexity", "code_quality"]
+        )
+        
         output.append({
             "sample_id": r.sample_id,
-            "rubric": r.rubric,
-            "errors": r.errors,
-            "rationale": r.rationale
+            "output": {
+                "rubric": rubric,
+                "total_score": total_score
+            }
         })
     
     return output
 
 
 def process_task2(grader: CppGrader, data: dict, split: str) -> List[Dict]:
-    """Xử lý Task 2: Error Classification"""
-    print("\n" + "="*60)
+    """Task 2: Error Classification"""
+    print("\n" + "#"*60)
     print(f"TASK 2: ERROR CLASSIFICATION ({split})")
     
-    # Task 2 dùng chung kết quả từ Task 1
-    # gọi process_task1 lấy errors
-    task1_results = process_task1(grader, data, split)
+    submissions = build_submissions(data)
     
+    results = grader.grade_batch(submissions)
+    results = grader.apply_prerequisite_policy(results, submissions)
+
     output = []
-    for r in task1_results:
+    for r in results:
         output.append({
-            "sample_id": r["sample_id"],
-            "errors": r["errors"]
+            "sample_id": r.sample_id,
+            "output": {
+                "taxonomy_error": r.errors
+            }
         })
     
     return output
@@ -161,59 +155,31 @@ def process_task2(grader: CppGrader, data: dict, split: str) -> List[Dict]:
 
 def process_task3(feedback_gen: FeedbackGenerator, grader: CppGrader, 
                   data: dict, split: str) -> List[Dict]:
-    """Xử lý Task 3: Feedback Generation"""
-    print("\n" + "="*60)
+    """Task 3: Feedback Generation + RAG 1-Shot"""
+    print("\n" + "#"*60)
     print(f"TASK 3: FEEDBACK GENERATION ({split})")
     
     # Load requested levels
     task3_levels = data.get("task3_requested_levels.json", {})
     if isinstance(task3_levels, list):
-        level_map = {item["sample_id"]: item["requested_level"] for item in task3_levels}
+        level_map = {item["sample_id"]: item.get("requested_level", 2) for item in task3_levels}
     else:
         level_map = {}
     
-    # Get Task 1 results để lấy errors
-    task1_results = process_task1(grader, data, split)
+    submissions = build_submissions(data)
     
-    # Build submissions
-    task1_data = data.get("task1_grading.json", {})
-    samples = task1_data.get("samples", [])
-    exams_data = data.get("exams.json", {})
+    # Lấy errors từ grader
+    results = grader.grade_batch(submissions)
+    results = grader.apply_prerequisite_policy(results, submissions)
     
-    submissions = []
-    for s in samples:
-        inp = s["input"]
-        code_file = inp.get("code_file", "")
-        code_path = data["submissions_dir"].parent / code_file
-        
-        if not code_path.exists():
-            continue
-        
-        code = code_path.read_text(encoding="utf-8")
-        exam_id = inp.get("exam_id", "")
-        
-        # statement
-        statement = ""
-        exam_list = exams_data.get("exams", [])
-        for exam in exam_list:
-            if exam.get("exam_id") == exam_id:
-                statement = exam.get("statement", "")
-                break
-        
-        submissions.append({
-            "sample_id": s["sample_id"],
-            "statement": statement,
-            "code": code
-        })
+    # Map sample_id -> errors
+    error_map = {r.sample_id: r.errors for r in results}
     
-    # Gen feedback
     output = []
     for i, sub in enumerate(submissions):
         sid = sub["sample_id"]
-        level = level_map.get(sid, 2)  # Default level 2
-        
-        # errors Task 1
-        errors = task1_results[i]["errors"] if i < len(task1_results) else []
+        level = level_map.get(sid, 2)
+        errors = error_map.get(sid, [])
         
         print(f"  [{i+1}/{len(submissions)}] {sid} (Level {level})")
         
@@ -226,10 +192,10 @@ def process_task3(feedback_gen: FeedbackGenerator, grader: CppGrader,
         
         output.append({
             "sample_id": sid,
-            "errors": errors,
-            "feedback": result["feedback"],
-            "level": level,
-            "level_compliant": result.get("level_compliant", True)
+            "output": {
+                "taxonomy_error": errors,
+                "feedback": result["feedback"]
+            }
         })
     
     return output
@@ -263,9 +229,12 @@ def run_pipeline(args):
         results = process_task2(grader, data, args.split)
         output_dir = os.path.join(args.output_dir, "task2")
     elif args.task == 3:
+        # TODO: Load train_examples cho RAG
+        # train_examples = load_task3_train_examples(...)
         feedback_gen = FeedbackGenerator(
             model=grader.model,
-            tokenizer=grader.tokenizer
+            tokenizer=grader.tokenizer,
+            # train_examples=train_examples   # bổ sung synthesis data
         )
         results = process_task3(feedback_gen, grader, data, args.split)
         output_dir = os.path.join(args.output_dir, "task3")

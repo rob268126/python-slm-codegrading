@@ -186,25 +186,24 @@ class CppGrader:
     def _parse_response(self, response: str, compile_log: str = "", test_report=None, code: str = "") -> tuple:
         fallback = self.heuristic_rubric(compile_log, test_report, code)
         
-        # Regex bắt JSON
-        json_match = re.search(r'\{.*"rubric".*"errors".*\}', response, re.DOTALL)
-
+        # Markdown Code Block
+        response = re.sub(r'^```json\n?', '', response.strip(), flags=re.MULTILINE)
+        response = re.sub(r'^```\n?', '', response.strip(), flags=re.MULTILINE)
+        response = re.sub(r'\n?```$', '', response.strip(), flags=re.MULTILINE)
+        
+        # Regex JSON 
+        json_match = re.search(r'\{.*"rubric".*\}', response, re.DOTALL)
+        
         if json_match:
             try:
                 parsed = json.loads(json_match.group())
                 rubric = self.sanitize_rubric(parsed.get("rubric", {}), fallback)
-                errors = parsed.get("errors", [])
-                if not isinstance(errors, list): errors = []
-                
-                errors = self.normalize_taxonomy(errors)
-                
+                errors = self.normalize_taxonomy(parsed.get("errors", []))
                 return rubric, errors, response
             except Exception:
                 pass
-
-        # Fallback nếu parse fail
-        rubric = self.sanitize_rubric({}, fallback)
-        return rubric, [], response
+                
+        return self.sanitize_rubric({}, fallback), [], response
 
     def grade_batch(self, submissions: List[dict]) -> List[GradingResult]:
         results = []
