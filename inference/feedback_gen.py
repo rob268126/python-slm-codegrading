@@ -72,6 +72,29 @@ class FeedbackGenerator:
         best_idx = int(sim.argmax())
         
         return self.train_contexts[best_idx], self.train_feedbacks[best_idx]
+
+    def enforce_level_compliance(self, feedback: str, level: int) -> str:
+        """Ép buộc feedback tuân thủ Level requirements."""
+        import re
+        
+        if level <= 2:
+            # Xóa tất cả code blocks
+            feedback = re.sub(r'```[\s\S]*?```', '', feedback)
+            # Xóa inline code dài
+            feedback = re.sub(r'`[^`]{20,}`', '', feedback)
+            # Xóa các từ khóa chỉ solution
+            forbidden = ["lời giải", "đáp án", "code hoàn chỉnh", "sửa thành", 
+                        "thay bằng", "đoạn mã", "viết lại thành"]
+            for word in forbidden:
+                feedback = re.sub(word, '', feedback, flags=re.IGNORECASE)
+            # Xóa dòng trống thừa
+            feedback = re.sub(r'\n{3,}', '\n\n', feedback)
+            feedback = feedback.strip()
+        
+        if not feedback:
+            feedback = "Em hãy đọc lại đề bài và kiểm tra logic của chương trình."
+        
+        return feedback
     
     def generate(self, code: str, statement: str, 
                  errors: List[str], level: int,
@@ -105,6 +128,8 @@ class FeedbackGenerator:
         
         # Nếu vẫn vi phạm sau retries → strip code blocks
         feedback = self._strip_code(feedback)
+        # Tuân thủ Level 1/2
+        feedback = self.enforce_level_compliance(feedback, level)
         return {
             "feedback": feedback,
             "level": level,

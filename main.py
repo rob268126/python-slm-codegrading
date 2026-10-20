@@ -132,21 +132,25 @@ def process_task1(grader: CppGrader, data: dict, split: str) -> List[Dict]:
 
 
 def process_task2(grader: CppGrader, data: dict, split: str) -> List[Dict]:
-    """Task 2: Error Classification"""
+    """Task 2: Error Classification - KHÔNG áp dụng prerequisite policy."""
     print("\n" + "#"*60)
     print(f"TASK 2: ERROR CLASSIFICATION ({split})")
     
     submissions = build_submissions(data)
     
     results = grader.grade_batch(submissions)
-    results = grader.apply_prerequisite_policy(results, submissions)
 
     output = []
     for r in results:
+        # Đảm bảo errors không rỗng nếu có compile error
+        errors = r.errors
+        if not errors and r.rubric.get("compilable", 1) == 0:
+            errors = ["Lỗi biên dịch"]
+        
         output.append({
             "sample_id": r.sample_id,
             "output": {
-                "taxonomy_error": r.errors
+                "taxonomy_error": errors
             }
         })
     

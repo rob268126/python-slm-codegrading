@@ -94,22 +94,43 @@ class CppGrader:
             max_new_tokens=1024, pad_token_id=self.tokenizer.eos_token_id,
         )
 
-    def build_prompt(self, statement: str, code: str, compile_log: str, test_report: str = "") -> str:
+    def build_prompt(self, statement: str, code: str, compile_log: str,
+                    test_report: str = "") -> str:
+        """Xây dựng prompt ChatML format - PHẢI KHỚP với training prompt."""
         compile_status = "COMPILE SUCCESS" if "error" not in compile_log.lower() else "COMPILE FAILED"
+        
+        if not compile_log:
+            compile_log_display = "Không có lỗi biên dịch"
+        else:
+            compile_log_display = compile_log[:500]
+
         input_text = (
             f"### Đề bài:\n{statement}\n\n"
             f"### Code sinh viên:\n```cpp\n{code}\n```\n\n"
             f"### Kết quả biên dịch thực tế (g++ -std=c++17):\n{compile_status}\n"
-            f"Log: {compile_log[:500] if compile_log else 'Empty'}\n\n"
-            f"### Test Report:\n{test_report if test_report else 'Không có test case công khai'}"
+            f"Log: {compile_log_display}\n\n"
+            f"### Test Report:\n{test_report if test_report else 'Không có'}"
         )
-        return (
+
+        prompt = (
             f"<|im_start|>system\n"
-            f"You are an expert C++ code grader. You have ACTUAL COMPILATION RESULTS as ground truth. "
-            f"Use them to grade accurately. Output ONLY valid JSON with keys 'rubric' and 'errors'.<|im_end|>\n"
+            f"You are an expert C++ code grader acting as a JUDGE. "
+            f"You have ACTUAL COMPILATION RESULTS as ground truth - trust them above all.\n"
+            f"Grading rubric:\n"
+            f"- compilable (0-1): Does code compile? Use compiler result.\n"
+            f"- io_format (0-1): Correct input/output format?\n"
+            f"- logic (0-4): Algorithm correctness. IF compilable=0, this MUST be 0.\n"
+            f"- edge_case (0-2): Handles edge cases? IF compilable=0, this MUST be 0.\n"
+            f"- complexity (0-1): Appropriate time/space complexity?\n"
+            f"- code_quality (0-1): Clean, readable code?\n\n"
+            f"Error taxonomy (multi-label): Lỗi biên dịch, Lỗi logic, Lỗi vòng lặp, "
+            f"Lỗi hàm, Lỗi I/O, Lỗi bộ nhớ, Lỗi kiểu dữ liệu, Lỗi thuật toán, "
+            f"Lỗi xử lý biên, Lỗi cú pháp, Không có lỗi\n\n"
+            f"Output ONLY valid JSON: {{\"rubric\": {{...}}, \"errors\": [...]}}<|im_end|>\n"
             f"<|im_start|>user\n{input_text}<|im_end|>\n"
             f"<|im_start|>assistant\n"
         )
+        return prompt
 
     def grade(self, statement: str, code: str, compile_log: str, test_report: str = "") -> GradingResult:
         prompt = self.build_prompt(statement, code, compile_log, test_report)
@@ -183,27 +204,135 @@ class CppGrader:
                 clean.append(mapped)
         return clean
 
-    def _parse_response(self, response: str, compile_log: str = "", test_report=None, code: str = "") -> tuple:
-        fallback = self.heuristic_rubric(compile_log, test_report, code)
+    def _parse_response(self, response: str, compile_log: str = "", 
+                        test_report=None, code: str = "") -> tuple:
+        """Parse JSON từ model output với fallback thông minh."""
+        import re
         
-        # Markdown Code Block
-        response = re.sub(r'^```json\n?', '', response.strip(), flags=re.MULTILINE)
-        response = re.sub(r'^```\n?', '', response.strip(), flags=re.MULTILINE)
-        response = re.sub(r'\n?```$', '', response.strip(), flags=re.MULTILINE)
+        # Bỏ markdown code blocks
+        clean_response = response.strip()
+        clean_response = re.sub(r'^```json\s*', '', clean_response)
+        clean_response = re.sub(r'^```\s*', '', clean_response)
+        clean_response = re.sub(r'\s*```$', '', clean_response)
         
-        # Regex JSON 
-        json_match = re.search(r'\{.*"rubric".*\}', response, re.DOTALL)
+        # Tìm JSON object
+        json_match = re.search(r'\{[^{}]*"rubric"[^{}]*\{[^}]*\}[^}]*"errors"[^}]*\[[^\]]*\][^}]*\}', 
+                            clean_response, re.DOTALL)
+        
+        if not json_match:
+            # Thử tìm bất kỳ JSON nào
+            json_match = re.search(r'\{.*\}', clean_response, re.DOTALL)
         
         if json_match:
             try:
                 parsed = json.loads(json_match.group())
-                rubric = self.sanitize_rubric(parsed.get("rubric", {}), fallback)
-                errors = self.normalize_taxonomy(parsed.get("errors", []))
-                return rubric, errors, response
-            except Exception:
-                pass
+                rubric = parsed.get("rubric", {})
+                errors = parsed.get("errors", [])
                 
-        return self.sanitize_rubric({}, fallback), [], response
+                # Validate rubric
+                valid_rubric = {}
+                for dim in self.RUBRIC_DIMS:
+                    val = rubric.get(dim, 0)
+                    try:
+                        val = int(float(val))
+                    except:
+                        val = 0
+                    lo, hi = self.RUBRIC_RANGES[dim]
+                    valid_rubric[dim] = max(lo, min(hi, val))
+                
+                # Validate errors
+                valid_errors = []
+                if isinstance(errors, list):
+                    for e in errors:
+                        if isinstance(e, str) and e in self.OFFICIAL_LABELS:
+                            valid_errors.append(e)
+                
+                # Compiler-based correction
+                has_compile_error = "error" in (compile_log or "").lower()
+                if has_compile_error:
+                    valid_rubric["compilable"] = 0
+                    valid_rubric["logic"] = 0
+                    valid_rubric["edge_case"] = 0
+                elif valid_rubric["compilable"] == 0:
+                    # Nếu model nói compilable=0 nhưng log không có error → sửa lại
+                    if compile_log and "error" not in compile_log.lower():
+                        valid_rubric["compilable"] = 1
+                
+                return valid_rubric, valid_errors, response
+                
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                pass
+        
+        # Fallback: heuristic dựa trên compile_log
+        fallback_rubric = self._heuristic_rubric(compile_log, test_report, code)
+        fallback_errors = self._heuristic_errors(compile_log, test_report, code)
+        return fallback_rubric, fallback_errors, response
+
+    def _heuristic_rubric(self, compile_log: str, test_report, code: str) -> dict:
+        """Fallback rubric khi parse fail."""
+        has_error = "error" in (compile_log or "").lower()
+        
+        if has_error:
+            return {d: 0 for d in self.RUBRIC_DIMS}
+        
+        rubric = {
+            "compilable": 1, "io_format": 1, "logic": 2,
+            "edge_case": 1, "complexity": 1, "code_quality": 1
+        }
+        
+        # Điều chỉnh dựa trên test_report
+        if test_report and isinstance(test_report, list) and len(test_report) > 0:
+            passed = sum(1 for t in test_report if isinstance(t, dict) and t.get("passed", False))
+            total = len(test_report)
+            rate = passed / total if total > 0 else 0
+            
+            if rate == 1.0:
+                rubric["logic"] = 4
+                rubric["edge_case"] = 2
+            elif rate >= 0.75:
+                rubric["logic"] = 3
+                rubric["edge_case"] = 1
+            elif rate >= 0.5:
+                rubric["logic"] = 2
+            elif rate > 0:
+                rubric["logic"] = 1
+            else:
+                rubric["logic"] = 0
+        
+        # Điều chỉnh dựa trên code quality
+        code_len = len(code.strip()) if code else 0
+        if code_len < 50:
+            rubric["code_quality"] = 0
+        elif code_len < 200:
+            rubric["code_quality"] = 1
+        
+        return rubric
+
+
+    def _heuristic_errors(self, compile_log: str, test_report, code: str) -> list:
+        """Fallback errors khi parse fail."""
+        errors = []
+        log_lower = (compile_log or "").lower()
+        
+        if "error" in log_lower:
+            errors.append("Lỗi biên dịch")
+            if "expected" in log_lower or "syntax" in log_lower:
+                errors.append("Lỗi cú pháp")
+            if "no matching function" in log_lower or "no match" in log_lower:
+                errors.append("Lỗi hàm")
+            if "cannot convert" in log_lower or "invalid conversion" in log_lower:
+                errors.append("Lỗi kiểu dữ liệu")
+        
+        if test_report and isinstance(test_report, list):
+            failed = [t for t in test_report if isinstance(t, dict) and not t.get("passed", True)]
+            if failed:
+                errors.append("Lỗi logic")
+        
+        code_lower = (code or "").lower()
+        if "while(true)" in code_lower or "while(1)" in code_lower:
+            errors.append("Lỗi vòng lặp")
+        
+        return list(set(errors))
 
     def grade_batch(self, submissions: List[dict]) -> List[GradingResult]:
         results = []
@@ -217,18 +346,36 @@ class CppGrader:
             results.append(result)
         return results
 
-    def apply_prerequisite_policy(self, results: List[GradingResult], submissions: List[dict]) -> List[GradingResult]:
+    def apply_prerequisite_policy(self, results: List[GradingResult], 
+                            submissions: List[dict]) -> List[GradingResult]:
+        """
+        Áp dụng chính sách tiên quyết CHỈ cho đề multi_problem.
+        Chỉ ép về 0 nếu câu TRƯỚC ĐÓ compilable=0.
+        KHÔNG ép về 0 nếu chỉ logic=0.
+        """
         exam_groups = {}
         for i, result in enumerate(results):
             exam_id = submissions[i].get("exam_id", "")
-            if exam_id not in exam_groups: exam_groups[exam_id] = []
-            exam_groups[exam_id].append((i, result))
+            exam_type = submissions[i].get("exam_type", "")
+            if exam_id not in exam_groups:
+                exam_groups[exam_id] = {"type": exam_type, "items": []}
+            exam_groups[exam_id]["items"].append((i, result))
         
-        for exam_id, group in exam_groups.items():
+        for exam_id, group_data in exam_groups.items():
+            # CHỈ áp dụng cho multi_problem
+            if group_data["type"] != "multi_problem":
+                continue
+                
+            group = group_data["items"]
             group.sort(key=lambda x: x[1].sample_id)
-            has_failed = False
+            
+            has_failed_prerequisite = False
             for idx, result in group:
-                if has_failed or result.rubric.get("compilable", 0) == 0 or result.rubric.get("logic", 0) == 0:
+                # ép về 0 nếu không compile được
+                if has_failed_prerequisite:
                     result.rubric = {d: 0 for d in self.RUBRIC_DIMS}
-                    has_failed = True
+                elif result.rubric.get("compilable", 0) == 0:
+                    result.rubric = {d: 0 for d in self.RUBRIC_DIMS}
+                    has_failed_prerequisite = True
+        
         return results
