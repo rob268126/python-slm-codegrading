@@ -129,6 +129,7 @@ class CppGrader:
             f"Output ONLY valid JSON: {{\"rubric\": {{...}}, \"errors\": [...]}}<|im_end|>\n"
             f"<|im_start|>user\n{input_text}<|im_end|>\n"
             f"<|im_start|>assistant\n"
+            f"Rationale: \n"
         )
         return prompt
 
@@ -362,7 +363,7 @@ class CppGrader:
             exam_groups[exam_id]["items"].append((i, result))
         
         for exam_id, group_data in exam_groups.items():
-            # CHỈ áp dụng cho multi_problem
+            # CHỈ áp cho multi_problem
             if group_data["type"] != "multi_problem":
                 continue
                 
