@@ -16,6 +16,40 @@ from inference.feedback_gen import FeedbackGenerator
 from sandbox.cpp_compiler import compile_cpp
 from evaluation.metrics import evaluate_all
 
+VALID_LABELS = {
+    "Lỗi biên dịch", "Lỗi logic", "Lỗi vòng lặp", "Lỗi hàm", "Lỗi I/O",
+    "Lỗi bộ nhớ", "Lỗi kiểu dữ liệu", "Lỗi thuật toán", "Lỗi xử lý biên", "Lỗi cú pháp"
+}
+
+LABEL_MAP = {
+    "Lỗi biến/hàm chưa khai báo": "Lỗi cú pháp",
+    "Lỗi liên kết (missing main)": "Lỗi biên dịch",
+    "Lỗi biên dịch khác": "Lỗi biên dịch",
+    "Không có lỗi": None,
+    "Lỗi syntax": "Lỗi cú pháp",
+    "Lỗi logic sai": "Lỗi logic",
+}
+
+def sanitize_taxonomy_errors(errors_list):
+    """Lọc và map các nhãn lỗi về đúng 10 nhãn chính thức."""
+    if not isinstance(errors_list, list):
+        return []
+    
+    valid = []
+    for e in errors_list:
+        if not isinstance(e, str):
+            continue
+        e = e.strip()
+        
+        if e in VALID_LABELS:
+            if e not in valid:
+                valid.append(e)
+        elif e in LABEL_MAP and LABEL_MAP[e] is not None:
+            mapped = LABEL_MAP[e]
+            if mapped not in valid:
+                valid.append(mapped)
+    
+    return valid
 
 def load_dataset(dataset_root: str, split: str = "train") -> dict:
     """Load dataset từ thư mục train/test/public_test/private_test"""
@@ -132,25 +166,23 @@ def process_task1(grader: CppGrader, data: dict, split: str) -> List[Dict]:
 
 
 def process_task2(grader: CppGrader, data: dict, split: str) -> List[Dict]:
-    """Task 2: Error Classification - KHÔNG áp dụng prerequisite policy."""
+    """Task 2: Error Classification"""
     print("\n" + "#"*60)
     print(f"TASK 2: ERROR CLASSIFICATION ({split})")
     
     submissions = build_submissions(data)
     
     results = grader.grade_batch(submissions)
+    results = grader.apply_prerequisite_policy(results, submissions)
 
     output = []
     for r in results:
-        # Đảm bảo errors không rỗng nếu có compile error
-        errors = r.errors
-        if not errors and r.rubric.get("compilable", 1) == 0:
-            errors = ["Lỗi biên dịch"]
+        cleaned_errors = sanitize_taxonomy_errors(r.errors)
         
         output.append({
             "sample_id": r.sample_id,
             "output": {
-                "taxonomy_error": errors
+                "taxonomy_error": cleaned_errors  # Dùng cleaned_errors thay vì r.errors
             }
         })
     
@@ -193,17 +225,18 @@ def process_task3(feedback_gen: FeedbackGenerator, grader: CppGrader,
             errors=errors,
             level=level
         )
+
+        cleaned_errors = sanitize_taxonomy_errors(errors)
         
         output.append({
             "sample_id": sid,
             "output": {
-                "taxonomy_error": errors,
+                "taxonomy_error": cleaned_errors,  # Dùng cleaned_errors thay vì errors
                 "feedback": result["feedback"]
             }
         })
     
     return output
-
 
 def run_pipeline(args):
     """Chạy pipeline"""

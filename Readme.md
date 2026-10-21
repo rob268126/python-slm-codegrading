@@ -15,7 +15,7 @@ Sinh phản hồi sư phạm có kiểm soát mức độ chi tiết
 
 ## Thư mục
 prequisition/  
-├── README.md                    # File hướng dẫn này  
+├──  
 ├── requirements.txt             # Các dependencies Python  
 ├── main.py                      # Pipeline chính điều phối toàn bộ flow  
 ├── dataset/                     # Thư mục chứa dataset (input)  
@@ -32,7 +32,7 @@ prequisition/
 │       ├── exams.json  
 │       └── label_space.json  
 ├── models/                      # Thư mục chứa model weights  
-│   └── lora_adapter_v3/         # LoRA adapter đã fine-tune  
+│   └── lora_adapter_v3/         # LoRA adapter đã fine-tune/ lấy tại output notebook  
 ├── evaluation/  
 │   └── metrics.py               # Các hàm tính toán metric đánh giá  
 ├── inference/  
@@ -41,9 +41,16 @@ prequisition/
 │   └── feedback_gen.py          # Module sinh phản hồi (Task 3)  
 ├── sandbox/  
 │   └── compiler.py              # C++ Compiler Sandbox (ground truth)  
-└── predictions.json             # Output predictions sau khi chạy  
+├── submission/  
+│   ├── task1/                   # submission task 1  
+│   ├── task2/                   # submission task 2  
+│   └── task3/                   # submission task 3  
+└── README.md                    # File hướng dẫn này 
 
-## Presiquisition (Compile C)
+## Chạy trên kaggle
+chạy file notebook trên kaggle
+## Chạy trên máy
+### Presiquisition (Compile C)
 g++ (Windows) for compile C
 ```bash
 winget install MSYS2.MSYS2
@@ -68,17 +75,17 @@ Check environment
 g++ --version
 ```
 
-## Output models
+### Output models hoặc chạy để lấy out put
 Link: https://www.kaggle.com/code/robviet/pipeline-cpp-grading-v5
 lora_adapter_v3.zip -> models/
 
-## Setup + Run
+### Setup + Run
 ```bash 
 pip install -r requirements.txt
 python main.py --dataset ./dataset/sample_dataset --model-path unsloth/Qwen2.5-Coder-7B-Instruct --adapter-path ./models/lora_adapter_v3 --output predictions.json
 ``` 
 
-## Chạy từng task trên public_test
+### Chạy từng task trên public_test
 Task 1  
 ```bash
 python main.py --dataset ./dataset --model-path unsloth/Qwen2.5-Coder-7B-Instruct --adapter-path ./models/lora_adapter_v3 --task 1 --split public_test --output-dir ./submission
