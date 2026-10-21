@@ -1,132 +1,93 @@
 """
 inference/ensemble.py
-Ensemble Qwen fine-tuned model + JEV judge
-Chiến lược: Weighted ensemble dựa trên confidence
+Chiến lược Ensemble kết hợp nhiều Judges (ví dụ Qwen LoRA + Rule-based / JEV).
+Đảm bảo output luôn tuân thủ strict rubric clamping và taxonomy normalization.
 """
-import numpy as np
-from typing import Dict, List, Optional
+from __future__ import annotations
+
 from collections import Counter
+from typing import Dict, List, Mapping, Optional, Sequence
+
+from core.schema import (
+    RUBRIC_DIMS,
+    RUBRIC_RANGES,
+    clamp_rubric,
+    normalize_labels,
+    total_score,
+)
 
 
 class GradingEnsemble:
+    """Kết hợp kết quả từ nhiều judges:
+    - Rubric: Weighted average rồi làm tròn. Đối với 'compilable', áp dụng nguyên tắc conservative (min).
+    - Errors: Majority voting qua threshold, chuẩn hóa qua `normalize_labels`.
     """
-    Kết hợp kết quả từ nhiều judges.
-    
-    Strategy:
-    - Rubric: weighted average theo confidence
-    - Errors: union nếu >= threshold judges đồng ý
-    - Compilable: conservative (min) — nếu 1 judge nói 0 → 0
-    """
-    
-    RUBRIC_DIMS = ["compilable", "io_format", "logic", 
-                   "edge_case", "complexity", "code_quality"]
-    
-    RUBRIC_RANGES = {
-        "compilable": (0, 1), "io_format": (0, 1),
-        "logic": (0, 4), "edge_case": (0, 2),
-        "complexity": (0, 1), "code_quality": (0, 1)
-    }
-    
+
     def __init__(self, error_threshold: float = 0.5):
         self.error_threshold = error_threshold
-    
-    def ensemble_rubric(self, predictions: List[dict], 
-                        weights: List[float] = None) -> Dict[str, int]:
-        """
-        Ensemble rubric scores.
-        
-        Args:
-            predictions: list of {"rubric": {...}, ...}
-            weights: trọng số cho mỗi prediction (default: đều)
-        """
+
+    def ensemble_rubric(
+        self,
+        predictions: Sequence[Mapping],
+        weights: Optional[Sequence[float]] = None,
+    ) -> Dict[str, int]:
         if not predictions:
-            return {d: 0 for d in self.RUBRIC_DIMS}
-        
+            return {d: 0 for d in RUBRIC_DIMS}
+
         n = len(predictions)
-        if weights is None:
+        if weights is None or len(weights) != n:
             weights = [1.0 / n] * n
-        
-        # Normalize weights
-        total_w = sum(weights)
-        weights = [w / total_w for w in weights]
-        
-        result = {}
-        for dim in self.RUBRIC_DIMS:
-            lo, hi = self.RUBRIC_RANGES[dim]
-            
+
+        total_w = sum(weights) or 1.0
+        norm_weights = [w / total_w for w in weights]
+
+        result: Dict[str, int] = {}
+        for dim in RUBRIC_DIMS:
+            lo, hi = RUBRIC_RANGES[dim]
             if dim == "compilable":
-                # Conservative: nếu BẤT KỲ judge nào nói 0 → 0
-                values = [p.get("rubric", {}).get(dim, 0) for p in predictions]
-                result[dim] = min(values) if values else 0
+                # Conservative: nếu có bất kỳ judge nào nói compilable=0 -> 0
+                vals = [p.get("rubric", {}).get(dim, 1) for p in predictions]
+                result[dim] = min(vals) if vals else 0
             else:
-                # Weighted average rồi round
-                weighted_sum = sum(
-                    w * p.get("rubric", {}).get(dim, 0) 
-                    for w, p in zip(weights, predictions)
+                weighted_val = sum(
+                    w * p.get("rubric", {}).get(dim, 0)
+                    for w, p in zip(norm_weights, predictions)
                 )
-                result[dim] = max(lo, min(hi, round(weighted_sum)))
-        
-        return result
-    
-    def ensemble_errors(self, predictions: List[dict], 
-                        threshold: float = None) -> List[str]:
-        """
-        Ensemble error labels.
-        Giữ nhãn nếu >= threshold fraction judges đồng ý.
-        """
+                result[dim] = max(lo, min(hi, int(round(weighted_val))))
+
+        return clamp_rubric(result)
+
+    def ensemble_errors(
+        self,
+        predictions: Sequence[Mapping],
+        threshold: Optional[float] = None,
+    ) -> List[str]:
         if threshold is None:
             threshold = self.error_threshold
-        
+
         if not predictions:
             return []
-        
-        n = len(predictions)
-        label_counts = Counter()
-        
-        for pred in predictions:
-            for label in pred.get("errors", []):
-                label_counts[label] += 1
-        
-        min_count = max(1, int(threshold * n))
-        result = [label for label, count in label_counts.items() 
-                  if count >= min_count]
-        
-        # Nếu không có lỗi nào được chọn -> "Không có lỗi"
-        if not result:
-            result = ["Không có lỗi"]
-        
-        return sorted(result)
-    
-    def ensemble_full(self, qwen_pred: dict, jev_pred: dict,
-                      qwen_weight: float = 0.6, 
-                      jev_weight: float = 0.4) -> dict:
-        """
-        Ensemble Qwen + JEV.
-        
-        Qwen thường tốt hơn về logic analysis → weight cao hơn.
-        JEV tốt hơn về structured consistency → weight thấp hơn nhưng quan trọng.
-        """
-        predictions = []
-        weights = []
-        
-        if qwen_pred:
-            predictions.append(qwen_pred)
-            weights.append(qwen_weight)
-        
-        if jev_pred:
-            predictions.append(jev_pred)
-            weights.append(jev_weight)
-        
-        rubric = self.ensemble_rubric(predictions, weights)
-        errors = self.ensemble_errors(predictions)
-        total = sum(rubric.values())
-        
+
+        counts = Counter()
+        for p in predictions:
+            raw = p.get("taxonomy_error") or p.get("errors") or []
+            for e in normalize_labels(raw):
+                counts[e] += 1
+
+        min_votes = max(1, int(threshold * len(predictions)))
+        voted = [err for err, cnt in counts.items() if cnt >= min_votes]
+        return normalize_labels(voted)
+
+    def ensemble_full(
+        self,
+        preds: Sequence[Mapping],
+        weights: Optional[Sequence[float]] = None,
+    ) -> Dict:
+        rubric = self.ensemble_rubric(preds, weights)
+        errors = self.ensemble_errors(preds)
+        tot = total_score(rubric)
         return {
             "rubric": rubric,
-            "total_score": total,
-            "errors": errors,
-            "ensemble_info": {
-                "sources": len(predictions),
-                "weights": weights
-            }
+            "total_score": tot,
+            "taxonomy_error": errors,
         }

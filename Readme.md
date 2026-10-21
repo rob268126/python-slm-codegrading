@@ -13,39 +13,28 @@ Phân loại lỗi theo taxonomy (Lỗi biên dịch, logic, vòng lặp, hàm, 
 - Task 3: Feedback Generation  
 Sinh phản hồi sư phạm có kiểm soát mức độ chi tiết  
 
-## Thư mục
-prequisition/  
-├──  
-├── requirements.txt             # Các dependencies Python  
-├── main.py                      # Pipeline chính điều phối toàn bộ flow  
-├── dataset/                     # Thư mục chứa dataset (input)  
-│   └── lora_adapter_v3/         # LoRA adapter đã fine-tune  
-│      ├── private_test  
-│      ├── public_test  
-│       ├── task2_error_taxonomy.json  
-│       ├── task3_feedback.json  
-│       ├── exams.json  
-│       └── label_space.json  
-│      ├── train  
-│       ├── task2_error_taxonomy.json  
-│       ├── task3_feedback.json  
-│       ├── exams.json  
-│       └── label_space.json  
-├── models/                      # Thư mục chứa model weights  
-│   └── lora_adapter_v3/         # LoRA adapter đã fine-tune/ lấy tại output notebook  
-├── evaluation/  
-│   └── metrics.py               # Các hàm tính toán metric đánh giá  
-├── inference/  
-│   ├── grader.py                # Module chấm điểm chính (Task 1 + Task 2)  
-│   ├── ensemble.py              # Ensemble chiến lược kết hợp nhiều judges  
-│   └── feedback_gen.py          # Module sinh phản hồi (Task 3)  
-├── sandbox/  
-│   └── compiler.py              # C++ Compiler Sandbox (ground truth)  
-├── submission/  
-│   ├── task1/                   # submission task 1  
-│   ├── task2/                   # submission task 2  
-│   └── task3/                   # submission task 3  
-└── README.md                    # File hướng dẫn này 
+## Cấu trúc thư mục
+```
+python-slm-codegrading/
+├── requirements.txt             # Dependencies Python
+├── main.py                      # Pipeline chính điều phối toàn bộ luồng
+├── core/                        # Package lõi dùng chung (Single Source of Truth)
+│   ├── schema.py                # 10 nhãn taxonomy chuẩn BTC, rubric clamping, level parser
+│   └── data.py                  # Dataset loader hợp nhất cho 3 tasks
+├── dataset/                     # Dữ liệu train, public_test, private_test
+├── models/                      # Thư mục chứa LoRA adapter (ví dụ: lora_adapter_v3/)
+├── evaluation/
+│   └── metrics.py               # Metric QWK, MAE, Macro-F1, Level Compliance
+├── inference/
+│   ├── llm.py                   # Wrapper model + tokenizer + prompt-budget shortener
+│   ├── grader.py                # Module chấm điểm Task 1 (Rubric) & Task 2 (Taxonomy)
+│   ├── ensemble.py              # Chiến lược ensemble kết hợp nhiều judges
+│   └── feedback_gen.py          # Module sinh phản hồi Task 3 (Few-shot RAG)
+├── sandbox/
+│   └── cpp_compiler.py          # C++ Compiler Sandbox (g++ ground truth + MSVC compat)
+├── submission/                  # File nộp: taskX_submission.json & predictions.json
+└── README.md
+```
 
 ## Chạy trên kaggle
 chạy file notebook trên kaggle
@@ -82,22 +71,30 @@ lora_adapter_v3.zip -> models/
 ### Setup + Run
 ```bash 
 pip install -r requirements.txt
-python main.py --dataset ./dataset/sample_dataset --model-path unsloth/Qwen2.5-Coder-7B-Instruct --adapter-path ./models/lora_adapter_v3 --output predictions.json
 ``` 
 
 ### Chạy từng task trên public_test
-Task 1  
+#### 1. Chạy trên GPU (Kaggle / Local CUDA) với LoRA adapter:
+- **Task 1 (Rubric Grading)**:
+  ```bash
+  python main.py --dataset ./dataset --split public_test --task 1 --adapter-path ./models/lora_adapter_v3
+  ```
+- **Task 2 (Error Taxonomy)**:
+  ```bash
+  python main.py --dataset ./dataset --split public_test --task 2 --adapter-path ./models/lora_adapter_v3
+  ```
+- **Task 3 (Pedagogical Feedback)**:
+  ```bash
+  python main.py --dataset ./dataset --split public_test --task 3 --adapter-path ./models/lora_adapter_v3
+  ```
+
+#### 2. Chạy thử nghiệm nhanh bằng Heuristic (Không cần GPU):
 ```bash
-python main.py --dataset ./dataset --model-path unsloth/Qwen2.5-Coder-7B-Instruct --adapter-path ./models/lora_adapter_v3 --task 1 --split public_test --output-dir ./submission
+python main.py --dataset ./dataset --split public_test --task 1 --heuristic
+python main.py --dataset ./dataset --split public_test --task 2 --heuristic
+python main.py --dataset ./dataset --split public_test --task 3 --heuristic
 ```
-Task 2  
-```bash
-python main.py --dataset ./dataset --model-path unsloth/Qwen2.5-Coder-7B-Instruct --adapter-path ./models lora_adapter_v3 --task 2 --split public_test --output-dir ./submission
-```
-Task 3
-```bash
-python main.py --dataset ./dataset --model-path unsloth/Qwen2.5-Coder-7B-Instruct --adapter-path ./models/lora_adapter_v3 --task 3 --split public_test --output-dir ./submission
-```
+*Ghi chú: Output được tự động lưu đồng thời thành `taskX_submission.json` và `predictions.json` tại `submission/taskX/` để nộp trực tiếp lên Leaderboard.*
 
 ## Docs
 ### 1. main.py -> chạy Pipeline
