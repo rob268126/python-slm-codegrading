@@ -32,7 +32,16 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from core.data import SplitData, Submission, build_submissions, load_split
-from core.schema import normalize_labels, total_score
+from core.schema import (
+    Task1Output,
+    Task1Submission,
+    Task2Output,
+    Task2Submission,
+    Task3Output,
+    Task3Submission,
+    normalize_labels,
+    total_score,
+)
 from evaluation.metrics import (
     evaluate_task1,
     evaluate_task2,
@@ -63,7 +72,7 @@ def export_submission(results: List[Dict], task: int, output_dir: str) -> str:
 
 
 def run_task1(grader: CppGrader, submissions: List[Submission]) -> List[Dict]:
-    """Task 1: Chấm điểm Rubric 6 tiêu chí và tính tổng điểm."""
+    """Task 1: Chấm điểm Rubric 6 tiêu chí và tính tổng điểm qua Pydantic model."""
     print("\n" + "=" * 60)
     print("TASK 1: RUBRIC GRADING")
     print("=" * 60)
@@ -72,19 +81,21 @@ def run_task1(grader: CppGrader, submissions: List[Submission]) -> List[Dict]:
 
     output = []
     for r in grading_results:
-        output.append({
-            "sample_id": r.sample_id,
-            "output": {
-                "rubric": r.rubric,
-                "total_score": r.total_score,
-            },
-        })
+        rubric_dict = r.rubric.to_dict() if hasattr(r.rubric, "to_dict") else dict(r.rubric)
+        item = Task1Submission(
+            sample_id=r.sample_id,
+            output=Task1Output(
+                rubric=rubric_dict,
+                total_score=r.total_score,
+            ),
+        )
+        output.append(item.model_dump())
     return output
 
 
 def run_task2(grader: CppGrader, submissions: List[Submission],
               cached_results: Optional[List[GradingResult]] = None) -> List[Dict]:
-    """Task 2: Phân loại lỗi đa nhãn (Taxonomy 10 nhãn)."""
+    """Task 2: Phân loại lỗi đa nhãn (Taxonomy 10 nhãn) qua Pydantic model."""
     print("\n" + "=" * 60)
     print("TASK 2: ERROR CLASSIFICATION")
     print("=" * 60)
@@ -93,19 +104,18 @@ def run_task2(grader: CppGrader, submissions: List[Submission],
 
     output = []
     for r in grading_results:
-        output.append({
-            "sample_id": r.sample_id,
-            "output": {
-                "taxonomy_error": r.taxonomy_error,
-            },
-        })
+        item = Task2Submission(
+            sample_id=r.sample_id,
+            output=Task2Output(taxonomy_error=r.taxonomy_error),
+        )
+        output.append(item.model_dump())
     return output
 
 
 def run_task3(feedback_gen: FeedbackGenerator, grader: CppGrader,
               submissions: List[Submission],
               cached_results: Optional[List[GradingResult]] = None) -> List[Dict]:
-    """Task 3: Tự chẩn đoán lỗi taxonomy và sinh phản hồi sư phạm tiếng Việt."""
+    """Task 3: Tự chẩn đoán lỗi taxonomy và sinh phản hồi sư phạm qua Pydantic model."""
     print("\n" + "=" * 60)
     print("TASK 3: PEDAGOGICAL FEEDBACK GENERATION")
     print("=" * 60)
@@ -122,13 +132,14 @@ def run_task3(feedback_gen: FeedbackGenerator, grader: CppGrader,
         errors = error_map.get(sub.sample_id, [])
         feedback = feedback_gen.generate_one(sub, errors=errors, level=sub.feedback_level)
 
-        output.append({
-            "sample_id": sub.sample_id,
-            "output": {
-                "taxonomy_error": errors,
-                "feedback": feedback,
-            },
-        })
+        item = Task3Submission(
+            sample_id=sub.sample_id,
+            output=Task3Output(
+                taxonomy_error=errors,
+                feedback=feedback,
+            ),
+        )
+        output.append(item.model_dump())
     return output
 
 

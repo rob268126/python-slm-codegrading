@@ -9,9 +9,9 @@ Chấm điểm và đánh giá bài nộp lập trình C++ của sinh viên:
 - Task 1: Rubric Grading  
 Chấm điểm theo 6 tiêu chí (compilable, io_format, logic, edge_case, complexity, code_quality)  
 - Task 2: Error Classification  
-Phân loại lỗi theo taxonomy (Lỗi biên dịch, logic, vòng lặp, hàm, I/O, bộ nhớ, ...)  
+Phân loại lỗi theo đúng 10 nhãn chính thức của BTC: Lỗi biên dịch, Lỗi nhập/xuất, Lỗi logic, Lỗi vòng lặp, Lỗi mảng/chuỗi, Lỗi hàm, Lỗi edge case, Lỗi thuật toán, Lỗi hard-code, Lỗi style.  
 - Task 3: Feedback Generation  
-Sinh phản hồi sư phạm có kiểm soát mức độ chi tiết  
+Sinh phản hồi sư phạm tiếng Việt có kiểm soát mức độ chi tiết (Level 1 → 4), tích hợp Local JEV Noul Verifier.  
 
 ## Cấu trúc thư mục
 ```
@@ -174,9 +174,9 @@ Sinh phản hồi tiếng Việt cho sinh viên với 4 mức độ kiểm soát
 🔄 Các bước chạy:  
 generate(code, statement, errors, level, max_retries=2):  
 - Gọi LLM để sinh feedback  
-- Kiểm tra level compliance bằng JEV Noul (nếu có) hoặc heuristic  
-- Nếu vi phạm → retry với prompt nghiêm khắc hơn (tối đa 2 lần)  
-- Nếu vẫn vi phạm → strip code blocks khỏi feedback  
+- Kiểm tra level compliance bằng Local JEV Noul Verifier (dùng chính Qwen 7B) hoặc heuristic  
+- Nếu vi phạm → retry tự sửa (Self-Refine) với prompt nghiêm khắc hơn  
+- Nếu vẫn vi phạm → làm sạch code blocks để bảo vệ 100% compliance  
 _generate_once(): Sinh feedback 1 lần với prompt cụ thể cho level  
 _heuristic_check(): Kiểm tra nhanh bằng keyword (ví dụ: #include, int main(), cout)  
 _strip_code(): Xóa các code blocks để đảm bảo compliance (dùng regex)  
@@ -191,7 +191,7 @@ _strip_code(): Xóa các code blocks để đảm bảo compliance (dùng regex)
 }
 ```
 
-### 6. sandbox/compiler.py - C++ Compiler Sandbox
+### 6. sandbox/cpp_compiler.py - C++ Compiler Sandbox
 💡 Ý tưởng:  
 Cung cấp ground truth từ kết quả biên dịch thực tế bằng g++. Kiểm tra tính đúng đắn của code, giúp hệ thống không bị hallucination của LLM ảnh hưởng.   
 🔄 Các bước chạy:  

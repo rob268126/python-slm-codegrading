@@ -2,13 +2,11 @@
 inference/feedback_gen.py
 Task 3: Sinh phản hồi tiếng Việt có kiểm soát mức độ sư phạm (Level 1 - 4).
 
-Các cải tiến mấu chốt:
-1. RAG / Few-Shot In-Context Learning: Tự động trích xuất các mẫu phản hồi thật của giảng viên
-   trong tập train theo đúng Level và loại đề để LLM học đúng phong cách ngắn gọn, sư phạm.
-2. Kiểm soát nghiêm ngặt Level Compliance:
-   - Level 1 & Level 2: Loại bỏ triệt để code block và lời giải hoàn chỉnh một cách tự nhiên
-     (KHÔNG để lại chuỗi rác như '[Code đã ẩn...]').
-3. Fallback Heuristic chất lượng cao: Khi chạy không có LLM, sinh phản hồi sát với ngữ cảnh lỗi.
+Tích hợp Local JEV Noul Engine (dùng chính Qwen2.5-Coder 7B):
+1. Generator (Actor): Sinh phản hồi sư phạm theo Level với Few-shot RAG từ tập train.
+2. Verifier (Critic - JEV Noul): Đóng vai trò thẩm định nhị phân (Yes/No), kiểm tra xem phản hồi
+   có vô tình tiết lộ code/lời giải ở Level 1 & 2 hay không. Nếu vi phạm, kích hoạt tự sửa (Self-Refine).
+3. Enforcer: Lớp bảo vệ cuối cùng đảm bảo 100% tuân thủ Level Compliance của cuộc thi.
 """
 from __future__ import annotations
 
@@ -49,7 +47,7 @@ def enforce_compliance(feedback: str, level: int) -> str:
     """Đảm bảo phản hồi tuân thủ Level mà không để lại chuỗi thô kệch."""
     clean = feedback.strip()
     if level <= 2:
-        # Xóa triệt để các code block
+        # Xóa triệt để các code block và inline code dài
         clean = _MD_CODE_BLOCK_RE.sub("", clean)
         clean = _INLINE_CODE_RE.sub("", clean)
         for p in _FORBIDDEN_PHRASES:
@@ -66,7 +64,7 @@ def enforce_compliance(feedback: str, level: int) -> str:
 
 
 class FeedbackGenerator:
-    """Bộ sinh phản hồi sư phạm tiếng Việt có kiểm soát Level."""
+    """Bộ sinh phản hồi sư phạm tiếng Việt tích hợp Local JEV Noul Verifier."""
 
     def __init__(self, llm=None, train_feedback_file: Optional[str] = None):
         """
@@ -116,6 +114,32 @@ class FeedbackGenerator:
         lines.append("")
         return "\n".join(lines)
 
+    def _noul_verify(self, feedback: str, level: int) -> bool:
+        """Local JEV Noul Verifier: Thẩm định nhị phân xem phản hồi có vi phạm quy định Level hay không."""
+        if level >= 3 or self.llm is None:
+            return is_level_compliant(feedback, level)
+
+        prompt = (
+            f"<|im_start|>system\n"
+            f"Bạn là thẩm định viên chất lượng sư phạm (Local JEV Noul Verifier).\n"
+            f"Nhiệm vụ: Xác định đoạn nhận xét có vi phạm quy định Level {level} hay không.\n"
+            f"Quy tắc Level {level}: Tuyệt đối CẤM đưa code C++, hàm hoàn chỉnh, hoặc lời giải đáp án.\n"
+            f"Chỉ trả lời duy nhất: [VI_PHAM] hoặc [HOP_LE].\n"
+            f"<|im_end|>\n"
+            f"<|im_start|>user\n"
+            f"Đoạn nhận xét:\n\"\"\"{feedback}\"\"\"\n"
+            f"Kết luận:\n"
+            f"<|im_end|>\n"
+            f"<|im_start|>assistant\n"
+        )
+        try:
+            ans = self.llm.generate(prompt, max_new_tokens=10).strip().upper()
+            if "[VI_PHAM]" in ans or "VI_PHAM" in ans or "VI PHẠM" in ans:
+                return False
+            return is_level_compliant(feedback, level)
+        except Exception:
+            return is_level_compliant(feedback, level)
+
     def heuristic_feedback(self, sub: Submission, errors: Sequence[str], level: int) -> str:
         """Sinh phản hồi sư phạm chuẩn mực không cần LLM."""
         norm_errors = normalize_labels(errors)
@@ -151,7 +175,7 @@ class FeedbackGenerator:
             return f"Phát hiện lỗi: {err_str}. Hãy kiểm tra cẩn thận logic rẽ nhánh và các trường hợp biên của bài toán."
 
     def generate_one(self, sub: Submission, errors: Sequence[str], level: Optional[int] = None) -> str:
-        """Sinh phản hồi cho 1 submission."""
+        """Sinh phản hồi với Local JEV Loop: Generator (Actor) -> Noul Verifier (Critic) -> Enforcer."""
         target_level = level if level in (1, 2, 3, 4) else sub.feedback_level
         norm_errors = normalize_labels(errors)
 
@@ -163,13 +187,14 @@ class FeedbackGenerator:
         level_rule = LEVEL_GUIDELINES.get(target_level, LEVEL_GUIDELINES[DEFAULT_FEEDBACK_LEVEL])
         err_display = ", ".join(norm_errors) if norm_errors else "Không có lỗi"
 
-        def _render(stmt: str, code: str) -> str:
+        def _render(stmt: str, code: str, warning_note: str = "") -> str:
             return (
                 f"<|im_start|>system\n"
                 f"Bạn là giảng viên lập trình C++ đang chấm bài cho sinh viên.\n"
                 f"Nhiệm vụ: Viết đoạn nhận xét ngắn gọn, đúng trọng tâm bằng tiếng Việt cho sinh viên.\n"
                 f"Mức phản hồi yêu cầu: Level {target_level}.\n"
                 f"Quy tắc cấp độ: {level_rule}\n"
+                f"{warning_note}"
                 f"Tuyệt đối tuân thủ quy tắc sư phạm trên.\n"
                 f"<|im_end|>\n"
                 f"<|im_start|>user\n"
@@ -183,6 +208,16 @@ class FeedbackGenerator:
                 f"<|im_start|>assistant\n"
             )
 
-        prompt = self.llm.fit_prompt(_render, sub.statement, sub.code)
+        prompt = self.llm.fit_prompt(lambda s, c: _render(s, c), sub.statement, sub.code)
         response = self.llm.generate(prompt, max_new_tokens=256)
+
+        # ---------------- Local JEV Noul Verifier Loop ----------------
+        if target_level <= 2:
+            is_valid = self._noul_verify(response, target_level)
+            if not is_valid:
+                # Kích hoạt Self-Refine retry với warning nghiêm khắc
+                warning = "CẢNH BÁO: Lần sinh trước đã bị vi phạm do chứa code. Tuyệt đối KHÔNG viết bất kỳ đoạn code nào, chỉ dùng lời giải thích tiếng Việt!\n"
+                retry_prompt = self.llm.fit_prompt(lambda s, c: _render(s, c, warning), sub.statement, sub.code)
+                response = self.llm.generate(retry_prompt, max_new_tokens=256)
+
         return enforce_compliance(response, target_level)
