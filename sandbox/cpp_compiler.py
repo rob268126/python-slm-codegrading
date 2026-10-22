@@ -85,8 +85,9 @@ def _compile_in(workdir: str, code: str, exam_type: str, std: str, timeout: int,
     result = _empty_result()
     gpp = find_gcc()
     if gpp is None:
-        result["compile_log"] = "g++ not found. Please install MinGW/g++ and add to PATH."
-        result["error_types"].append("Lỗi môi trường")
+        # Thiếu toolchain != bài lỗi biên dịch -> trạng thái "không xác định" (None).
+        result["compile_success"] = result["compilable"] = None
+        result["compile_log"] = ""
         return result
 
     src = os.path.join(workdir, "student.cpp")
@@ -102,9 +103,8 @@ def _compile_in(workdir: str, code: str, exam_type: str, std: str, timeout: int,
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
                               encoding="utf-8", errors="replace")
     except subprocess.TimeoutExpired:
-        result["compile_log"] = "COMPILATION TIMEOUT"
-        result["errors"].append("Compilation timed out")
-        result["error_types"].append("Lỗi timeout")
+        # Compiler treo không chứng minh được code sai cú pháp -> không xác định.
+        result["compile_success"] = result["compilable"] = None
         return result
 
     # Chuẩn hoá đường dẫn file tạm để log ổn định giữa các lần chạy.
@@ -122,6 +122,7 @@ def compile_cpp(code: str, exam_type: str = "single_problem", std: str = "c++11"
                 timeout: int = 15, msvc_compat: bool = True) -> dict:
     """Biên dịch code C++ và trả về dict:
     compilable, compile_success, compile_log, errors, warnings, error_types.
+    compile_success = None nghĩa là không xác định được (thiếu g++ hoặc timeout).
     """
     with tempfile.TemporaryDirectory() as workdir:
         return _compile_in(workdir, code, exam_type, std, timeout, msvc_compat)

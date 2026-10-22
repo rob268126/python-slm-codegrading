@@ -98,12 +98,12 @@ class CppGrader:
             f"- Lỗi hàm: Missing function implementation, recursion overflow, bad return.\n"
             f"- Lỗi edge case: Failure to handle corner cases (0, empty, overflow).\n"
             f"- Lỗi thuật toán: Inefficient or inappropriate algorithm causing TLE.\n"
-            f"- Lỗi hard-code: Hard-coding specific test values.\n"
+            f"- Lỗi hard-code: Hard-coding specific test values or file names.\n"
             f"- Lỗi style: Extremely poor naming, indentation, or dead code.\n\n"
-            f"Output ONLY valid JSON: {{\"rubric\": {{\"compilable\": 0, \"io_format\": 0, \"logic\": 0, \"edge_case\": 0, \"complexity\": 0, \"code_quality\": 0}}, \"taxonomy_error\": [...]}}<|im_end|>\n"
+            f"Output ONLY valid JSON with keys \"rubric\" and \"taxonomy_error\":\n"
+            f"{{\"rubric\": {{\"compilable\": 1, \"io_format\": 1, \"logic\": 2, \"edge_case\": 1, \"complexity\": 1, \"code_quality\": 1}}, \"taxonomy_error\": [...]}}<|im_end|>\n"
             f"<|im_start|>user\n{input_text}<|im_end|>\n"
-            f"<|im_start|>assistant\n"
-            f"Rationale: \n"
+            f"<|im_start|>assistant\n{{"
         )
         return prompt
 
@@ -113,8 +113,12 @@ class CppGrader:
             return sub
 
         res = compile_cpp(sub.code, exam_type=sub.exam_type)
+        success = res.get("compile_success")
+        if success is None:
+            # Không có g++ / timeout: giữ trạng thái "chưa biết", không phạt bài làm.
+            return sub
         sub.compile_log = res.get("compile_log", "")
-        sub.compile_failed = not res.get("compile_success", False)
+        sub.compile_failed = not success
         return sub
 
     def heuristic_grade(self, sub: Submission) -> GradingResult:
@@ -135,14 +139,14 @@ class CppGrader:
                 compiler_verified=True,
             )
 
-        # Code biên dịch được: khởi tạo điểm mặc định khá
+        # Code biên dịch được: khởi tạo điểm mặc định chuẩn theo dữ liệu phân bố của giảng viên (median = 7)
         rubric_dict = {
             "compilable": 1, "io_format": 1, "logic": 2,
             "edge_case": 1, "complexity": 1, "code_quality": 1
         }
         errors: List[str] = []
 
-        # Điều chỉnh theo test_report (nếu có ở single_problem)
+        # Điều chỉnh theo test_report nếu có
         if isinstance(sub.test_report, list) and len(sub.test_report) > 0:
             passed = sum(1 for t in sub.test_report if isinstance(t, dict) and t.get("passed", False))
             total = len(sub.test_report)
@@ -158,21 +162,24 @@ class CppGrader:
                 rubric_dict["logic"], rubric_dict["edge_case"] = 1, 0
                 errors.append(LABEL_LOGIC)
             else:
-                rubric_dict["logic"], rubric_dict["edge_case"] = 0, 0
+                rubric_dict["logic"], rubric_dict["edge_case"] = 1, 0
+                rubric_dict["io_format"] = 0
                 errors.append(LABEL_LOGIC)
+                errors.append(LABEL_IO)
 
-        # Heuristic phát hiện lỗi logic/vòng lặp/hardcode/style
+        # Heuristic phát hiện lỗi logic / vòng lặp
         if "while(true)" in code_lower or "while(1)" in code_lower:
             errors.append(LABEL_LOOP)
 
-        # Phát hiện bài nộp bị comment toàn bộ (Lỗi style)
+        # Phát hiện bài nộp bị comment toàn bộ hoặc tỷ lệ comment bất thường (Lỗi style)
         non_empty_lines = [l.strip() for l in code.splitlines() if l.strip()]
         comment_lines = sum(1 for l in non_empty_lines if l.startswith("//") or l.startswith("/*"))
-        if non_empty_lines and (comment_lines / len(non_empty_lines)) > 0.6:
+        if non_empty_lines and (comment_lines / len(non_empty_lines)) > 0.45:
             errors.append(LABEL_STYLE)
+            rubric_dict["code_quality"] = 0
 
-        # Phát hiện hardcode tên file csv trong đề multi_problem
-        if sub.is_multi_problem and re.search(r'"[^"\n]*\.csv"', code, re.IGNORECASE):
+        # Phát hiện hardcode tên file csv hoặc include file csv trong đề multi_problem
+        if sub.is_multi_problem and (re.search(r'"[^"\n]*\.csv"', code, re.IGNORECASE) or "#include" in code and ".csv" in code):
             errors.append(LABEL_HARDCODE)
 
         return GradingResult(
@@ -189,6 +196,8 @@ class CppGrader:
         # Bỏ markdown code block nếu có
         clean = re.sub(r"^```(?:json)?\s*", "", clean)
         clean = re.sub(r"\s*```$", "", clean)
+        if not clean.startswith("{"):
+            clean = "{" + clean
 
         # Tìm JSON object chứa rubric hoặc errors
         match = re.search(r"\{[^{}]*\"rubric\"[^{}]*\{[^}]*\}[^{}]*\}", clean, re.DOTALL)
@@ -200,7 +209,6 @@ class CppGrader:
 
         try:
             parsed_json = json.loads(match.group())
-            judge_res = LLMJudgeResponse.model_validate(parsed_json)
         except Exception:
             # Fallback an toàn sang heuristic nếu JSON hoàn toàn không parse được
             return self.heuristic_grade(sub)
@@ -209,10 +217,30 @@ class CppGrader:
         sub = self._ensure_compile_info(sub)
         is_compile_failed = sub.compile_failed is True or has_compile_error(sub.compile_log)
 
+        # Đồng bộ compilable vào raw dict TRƯỚC KHI Pydantic validate
+        # để compiler ground truth bảo vệ logic/edge_case không bị zero-out oan
+        if "rubric" in parsed_json and isinstance(parsed_json["rubric"], dict):
+            if is_compile_failed:
+                parsed_json["rubric"]["compilable"] = 0
+            elif parsed_json["rubric"].get("compilable", 0) == 0:
+                parsed_json["rubric"]["compilable"] = 1
+
+        try:
+            judge_res = LLMJudgeResponse.model_validate(parsed_json)
+        except Exception:
+            return self.heuristic_grade(sub)
+
+        # Bổ sung các nhãn lỗi code-level khách quan (hard-code, style) nếu phát hiện trong code
+        heuristic_res = self.heuristic_grade(sub)
+        combined_errors = set(judge_res.taxonomy_error)
+        for err in heuristic_res.taxonomy_error:
+            if err in (LABEL_HARDCODE, LABEL_STYLE, LABEL_LOOP):
+                combined_errors.add(err)
+
         res = GradingResult(
             sample_id=sub.sample_id,
             rubric=judge_res.rubric,
-            taxonomy_error=judge_res.taxonomy_error,
+            taxonomy_error=list(combined_errors),
             rationale=clean[:300],
         )
         res.apply_compiler_ground_truth(is_compile_failed)

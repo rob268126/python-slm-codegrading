@@ -46,6 +46,13 @@ _FORBIDDEN_PHRASES = [
 def enforce_compliance(feedback: str, level: int) -> str:
     """Đảm bảo phản hồi tuân thủ Level mà không để lại chuỗi thô kệch."""
     clean = feedback.strip()
+    # Loại bỏ tiền tố nhại lại từ prompt ví dụ như "- Lỗi: ... \n Phản hồi: "
+    if "phản hồi:" in clean.lower():
+        parts = re.split(r"phản hồi\s*:\s*", clean, flags=re.IGNORECASE)
+        if len(parts) > 1 and parts[-1].strip():
+            clean = parts[-1].strip()
+    clean = re.sub(r"^[-*•]?\s*(Lỗi|Phản hồi|Nhận xét|Chẩn đoán)\s*:\s*", "", clean, flags=re.IGNORECASE)
+
     if level <= 2:
         # Xóa triệt để các code block và inline code dài
         clean = _MD_CODE_BLOCK_RE.sub("", clean)
@@ -55,11 +62,13 @@ def enforce_compliance(feedback: str, level: int) -> str:
         # Làm sạch khoảng trắng thừa
         clean = re.sub(r"\n\s*\n\s*\n+", "\n\n", clean).strip()
 
-    if not clean:
+    if not clean or clean.lower() in ("tốt.", "tốt", "ok"):
         if level == 1:
             clean = "Bài làm có một số điểm chưa tối ưu, em hãy đọc kỹ lại yêu cầu đề bài và kiểm tra các trường hợp biên."
-        else:
+        elif level == 2:
             clean = "Em cần kiểm tra lại logic xử lý thuật toán và điều kiện dừng của chương trình."
+        else:
+            clean = "Em hãy kiểm tra lại cấu trúc vòng lặp và xử lý các trường hợp biên của bài toán."
     return clean
 
 
@@ -107,10 +116,9 @@ class FeedbackGenerator:
         matched = [c for c in candidates if c.get("exam_type") == exam_type]
         chosen = (matched or candidates)[:2]
 
-        lines = ["### Ví dụ mẫu của giảng viên:"]
+        lines = ["### Mẫu nhận xét tham khảo của giảng viên:"]
         for ex in chosen:
-            err_str = ", ".join(ex["errors"]) if ex["errors"] else "Không phát hiện lỗi"
-            lines.append(f"- Lỗi: {err_str}\n  Phản hồi: {ex['feedback']}")
+            lines.append(f"- Nhận xét: \"{ex['feedback'].strip()}\"")
         lines.append("")
         return "\n".join(lines)
 
@@ -203,7 +211,7 @@ class FeedbackGenerator:
                 f"Đề bài:\n{stmt[:800]}\n\n"
                 f"Code sinh viên:\n```cpp\n{code[:1500]}\n```\n\n"
                 f"Các lỗi chẩn đoán: {err_display}\n"
-                f"Yêu cầu: Viết phản hồi Level {target_level} bằng tiếng Việt:\n"
+                f"Yêu cầu: Viết trực tiếp nhận xét Level {target_level} bằng tiếng Việt, không lặp lại tiền tố:\n"
                 f"<|im_end|>\n"
                 f"<|im_start|>assistant\n"
             )
@@ -219,5 +227,10 @@ class FeedbackGenerator:
                 warning = "CẢNH BÁO: Lần sinh trước đã bị vi phạm do chứa code. Tuyệt đối KHÔNG viết bất kỳ đoạn code nào, chỉ dùng lời giải thích tiếng Việt!\n"
                 retry_prompt = self.llm.fit_prompt(lambda s, c: _render(s, c, warning), sub.statement, sub.code)
                 response = self.llm.generate(retry_prompt, max_new_tokens=256)
+
+        # Safeguard chẩn đoán: Nếu bài có lỗi nhưng mô hình lại nhại theo few-shot sinh "không có lỗi" hoặc "tốt"
+        fb_lower = response.lower()
+        if norm_errors and ("không phát hiện lỗi" in fb_lower or "không có lỗi" in fb_lower or response.strip().lower() in ("tốt.", "tốt")):
+            response = self.heuristic_feedback(sub, norm_errors, target_level)
 
         return enforce_compliance(response, target_level)

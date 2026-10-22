@@ -47,24 +47,17 @@ from evaluation.metrics import (
 )
 from inference.feedback_gen import FeedbackGenerator
 from inference.grader import CppGrader, GradingResult
+from sandbox.cpp_compiler import find_gcc
 
 
-def export_submission(results: List[Dict], task: int, output_dir: str) -> str:
-    """Xuất file submission theo đúng quy chuẩn BTC yêu cầu."""
+def export_submission(results: List[Dict], output_dir: str) -> str:
+    """Xuất duy nhất file predictions.json chuẩn theo quy định nộp của BTC."""
     os.makedirs(output_dir, exist_ok=True)
-
-    # 1. File đặt theo tên task
-    task_file = os.path.join(output_dir, f"task{task}_submission.json")
-    with open(task_file, "w", encoding="utf-8") as f:
-        json.dump(results, f, ensure_ascii=False, indent=2)
-
-    # 2. File predictions.json chuẩn để nộp trực tiếp lên Leaderboard
     pred_file = os.path.join(output_dir, "predictions.json")
     with open(pred_file, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
 
     print(f"\n[Export] Đã lưu {len(results)} kết quả:")
-    print(f"  -> {task_file}")
     print(f"  -> {pred_file} (File nộp Leaderboard)")
     return pred_file
 
@@ -171,6 +164,9 @@ def run_pipeline(args):
             llm = None
 
     # 3. Khởi tạo Grader và FeedbackGenerator
+    if not args.no_sandbox and find_gcc() is None:
+        print("\n[WARN] Không tìm thấy g++ -> bỏ qua compiler sandbox (compilable = không xác định). "
+              "Kết quả sẽ kém chính xác; hãy cài g++ (Kaggle có sẵn).")
     grader = CppGrader(llm=llm, use_compiler_sandbox=not args.no_sandbox)
 
     train_feedback_file = str(pathlib.Path(args.dataset) / "train" / "task3_feedback.json")
@@ -210,7 +206,7 @@ def run_pipeline(args):
 
     # 5. Xuất file nộp
     if results:
-        export_submission(results, args.task, output_dir)
+        export_submission(results, output_dir)
 
     print("\nHoàn tất pipeline thành công!")
 

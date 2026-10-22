@@ -228,8 +228,7 @@ class GradingResult(BaseModel):
             if LABEL_COMPILE not in self.taxonomy_error:
                 self.taxonomy_error = normalize_labels([LABEL_COMPILE] + list(self.taxonomy_error))
         else:
-            if self.rubric.compilable == 0:
-                self.rubric.compilable = 1
+            self.rubric.compilable = 1
             if LABEL_COMPILE in self.taxonomy_error:
                 self.taxonomy_error = [e for e in self.taxonomy_error if e != LABEL_COMPILE]
 
