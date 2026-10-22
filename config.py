@@ -4,7 +4,6 @@ Cấu hình hệ thống Local JEV và đường dẫn mô hình.
 Hệ thống sử dụng Qwen2.5-Coder-7B chạy cục bộ làm Local JEV Judge (không phụ thuộc external API).
 """
 import os
-from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()

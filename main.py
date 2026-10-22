@@ -31,7 +31,7 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-from core.data import SplitData, Submission, build_submissions, load_split
+from core.data import Submission, build_submissions, load_split
 from core.schema import (
     Task1Output,
     Task1Submission,
@@ -39,8 +39,6 @@ from core.schema import (
     Task2Submission,
     Task3Output,
     Task3Submission,
-    normalize_labels,
-    total_score,
 )
 from evaluation.metrics import (
     evaluate_task1,

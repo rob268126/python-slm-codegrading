@@ -11,7 +11,7 @@ Sử dụng Pydantic v2 để tự động hóa:
 from __future__ import annotations
 
 import re
-from typing import Dict, Iterable, List, Literal, Mapping, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Literal, Mapping, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 

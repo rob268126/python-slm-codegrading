@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Dict, List, Optional, Sequence
+from typing import List, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -20,7 +20,6 @@ from core.data import Submission, has_compile_error
 from core.schema import (
     LABEL_COMPILE,
     LABEL_HARDCODE,
-    LABEL_IO,
     LABEL_LOGIC,
     LABEL_LOOP,
     LABEL_STYLE,
