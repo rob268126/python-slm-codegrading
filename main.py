@@ -31,8 +31,15 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-from core.data import SplitData, Submission, build_submissions, load_split
-from core.schema import normalize_labels, total_score
+from core.data import Submission, build_submissions, load_split
+from core.schema import (
+    Task1Output,
+    Task1Submission,
+    Task2Output,
+    Task2Submission,
+    Task3Output,
+    Task3Submission,
+)
 from evaluation.metrics import (
     evaluate_task1,
     evaluate_task2,
@@ -40,51 +47,47 @@ from evaluation.metrics import (
 )
 from inference.feedback_gen import FeedbackGenerator
 from inference.grader import CppGrader, GradingResult
+from sandbox.cpp_compiler import find_gcc
 
 
-def export_submission(results: List[Dict], task: int, output_dir: str) -> str:
-    """Xuất file submission theo đúng quy chuẩn BTC yêu cầu."""
+def export_submission(results: List[Dict], output_dir: str) -> str:
+    """Xuất duy nhất file predictions.json chuẩn theo quy định nộp của BTC."""
     os.makedirs(output_dir, exist_ok=True)
-
-    # 1. File đặt theo tên task
-    task_file = os.path.join(output_dir, f"task{task}_submission.json")
-    with open(task_file, "w", encoding="utf-8") as f:
-        json.dump(results, f, ensure_ascii=False, indent=2)
-
-    # 2. File predictions.json chuẩn để nộp trực tiếp lên Leaderboard
     pred_file = os.path.join(output_dir, "predictions.json")
     with open(pred_file, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
 
     print(f"\n[Export] Đã lưu {len(results)} kết quả:")
-    print(f"  -> {task_file}")
     print(f"  -> {pred_file} (File nộp Leaderboard)")
     return pred_file
 
 
-def run_task1(grader: CppGrader, submissions: List[Submission]) -> List[Dict]:
-    """Task 1: Chấm điểm Rubric 6 tiêu chí và tính tổng điểm."""
+def run_task1(grader: CppGrader, submissions: List[Submission],
+              cached_results: Optional[List[GradingResult]] = None) -> List[Dict]:
+    """Task 1: Chấm điểm Rubric 6 tiêu chí và tính tổng điểm qua Pydantic model."""
     print("\n" + "=" * 60)
     print("TASK 1: RUBRIC GRADING")
     print("=" * 60)
 
-    grading_results = grader.grade_batch(submissions)
+    grading_results = cached_results if cached_results is not None else grader.grade_batch(submissions)
 
     output = []
     for r in grading_results:
-        output.append({
-            "sample_id": r.sample_id,
-            "output": {
-                "rubric": r.rubric,
-                "total_score": r.total_score,
-            },
-        })
+        rubric_dict = r.rubric.to_dict() if hasattr(r.rubric, "to_dict") else dict(r.rubric)
+        item = Task1Submission(
+            sample_id=r.sample_id,
+            output=Task1Output(
+                rubric=rubric_dict,
+                total_score=r.total_score,
+            ),
+        )
+        output.append(item.model_dump())
     return output
 
 
 def run_task2(grader: CppGrader, submissions: List[Submission],
               cached_results: Optional[List[GradingResult]] = None) -> List[Dict]:
-    """Task 2: Phân loại lỗi đa nhãn (Taxonomy 10 nhãn)."""
+    """Task 2: Phân loại lỗi đa nhãn (Taxonomy 10 nhãn) qua Pydantic model."""
     print("\n" + "=" * 60)
     print("TASK 2: ERROR CLASSIFICATION")
     print("=" * 60)
@@ -93,19 +96,18 @@ def run_task2(grader: CppGrader, submissions: List[Submission],
 
     output = []
     for r in grading_results:
-        output.append({
-            "sample_id": r.sample_id,
-            "output": {
-                "taxonomy_error": r.taxonomy_error,
-            },
-        })
+        item = Task2Submission(
+            sample_id=r.sample_id,
+            output=Task2Output(taxonomy_error=r.taxonomy_error),
+        )
+        output.append(item.model_dump())
     return output
 
 
 def run_task3(feedback_gen: FeedbackGenerator, grader: CppGrader,
               submissions: List[Submission],
               cached_results: Optional[List[GradingResult]] = None) -> List[Dict]:
-    """Task 3: Tự chẩn đoán lỗi taxonomy và sinh phản hồi sư phạm tiếng Việt."""
+    """Task 3: Tự chẩn đoán lỗi taxonomy và sinh phản hồi sư phạm qua Pydantic model."""
     print("\n" + "=" * 60)
     print("TASK 3: PEDAGOGICAL FEEDBACK GENERATION")
     print("=" * 60)
@@ -122,13 +124,14 @@ def run_task3(feedback_gen: FeedbackGenerator, grader: CppGrader,
         errors = error_map.get(sub.sample_id, [])
         feedback = feedback_gen.generate_one(sub, errors=errors, level=sub.feedback_level)
 
-        output.append({
-            "sample_id": sub.sample_id,
-            "output": {
-                "taxonomy_error": errors,
-                "feedback": feedback,
-            },
-        })
+        item = Task3Submission(
+            sample_id=sub.sample_id,
+            output=Task3Output(
+                taxonomy_error=errors,
+                feedback=feedback,
+            ),
+        )
+        output.append(item.model_dump())
     return output
 
 
@@ -162,46 +165,54 @@ def run_pipeline(args):
             llm = None
 
     # 3. Khởi tạo Grader và FeedbackGenerator
-    grader = CppGrader(llm=llm, use_compiler_sandbox=not args.no_sandbox)
+    if not args.no_sandbox and find_gcc() is None:
+        print("\n[WARN] Không tìm thấy g++ -> bỏ qua compiler sandbox (compilable = không xác định). "
+              "Kết quả sẽ kém chính xác; hãy cài g++ (Kaggle có sẵn).")
+    tester = None
+    if llm is not None and not args.no_differential:
+        from sandbox.differential import DifferentialTester
+        tester = DifferentialTester(llm, cache_dir=args.cache_dir)
+    grader = CppGrader(llm=llm, use_compiler_sandbox=not args.no_sandbox, tester=tester)
 
     train_feedback_file = str(pathlib.Path(args.dataset) / "train" / "task3_feedback.json")
     feedback_gen = FeedbackGenerator(llm=llm, train_feedback_file=train_feedback_file)
 
-    # 4. Thực thi từng task
-    results = []
-    output_dir = os.path.join(args.output_dir, f"task{args.task}")
+    # 4. Thực thi các task; chấm điểm LLM đúng một lần rồi dùng chung cho Task 1/2/3
+    tasks = [1, 2, 3] if args.task == "all" else [int(args.task)]
+    grading_results = grader.grade_batch(submissions)
 
-    if args.task == 1:
-        results = run_task1(grader, submissions)
-        # Đánh giá nội bộ nếu có ground truth
-        gold_r = split_data.gold_rubrics()
-        if gold_r:
-            metrics = evaluate_task1(results, gold_r)
-            print("\n--- Đánh giá nội bộ Task 1 ---")
-            print(f"  QWK (tổng điểm) : {metrics['qwk']:.4f}")
-            print(f"  MAE (tổng điểm) : {metrics['mae']:.4f}")
+    for task in tasks:
+        results = []
+        output_dir = os.path.join(args.output_dir, f"task{task}")
 
-    elif args.task == 2:
-        results = run_task2(grader, submissions)
-        # Đánh giá nội bộ nếu có ground truth
-        gold_t = split_data.gold_taxonomy()
-        if gold_t:
-            metrics = evaluate_task2(results, gold_t)
-            print("\n--- Đánh giá nội bộ Task 2 ---")
-            print(f"  Macro-F1 (chính): {metrics['macro_f1']:.4f}")
-            print(f"  Micro-F1        : {metrics['micro_f1']:.4f}")
+        if task == 1:
+            results = run_task1(grader, submissions, grading_results)
+            gold_r = split_data.gold_rubrics()
+            if gold_r:
+                metrics = evaluate_task1(results, gold_r)
+                print("\n--- Đánh giá nội bộ Task 1 ---")
+                print(f"  QWK (tổng điểm) : {metrics['qwk']:.4f}")
+                print(f"  MAE (tổng điểm) : {metrics['mae']:.4f}")
 
-    elif args.task == 3:
-        results = run_task3(feedback_gen, grader, submissions)
-        # Đánh giá compliance
-        level_map = {s.sample_id: s.feedback_level for s in submissions}
-        metrics = evaluate_task3_compliance(results, level_map)
-        print("\n--- Đánh giá nội bộ Task 3 ---")
-        print(f"  Level Compliance: {metrics['compliance_rate']:.2%} ({metrics['compliant']}/{metrics['total']})")
+        elif task == 2:
+            results = run_task2(grader, submissions, grading_results)
+            gold_t = split_data.gold_taxonomy()
+            if gold_t:
+                metrics = evaluate_task2(results, gold_t)
+                print("\n--- Đánh giá nội bộ Task 2 ---")
+                print(f"  Macro-F1 (chính): {metrics['macro_f1']:.4f}")
+                print(f"  Micro-F1        : {metrics['micro_f1']:.4f}")
 
-    # 5. Xuất file nộp
-    if results:
-        export_submission(results, args.task, output_dir)
+        else:
+            results = run_task3(feedback_gen, grader, submissions, grading_results)
+            level_map = {s.sample_id: s.feedback_level for s in submissions}
+            metrics = evaluate_task3_compliance(results, level_map)
+            print("\n--- Đánh giá nội bộ Task 3 ---")
+            print(f"  Level Compliance: {metrics['compliance_rate']:.2%} ({metrics['compliant']}/{metrics['total']})")
+
+        # 5. Xuất file nộp
+        if results:
+            export_submission(results, output_dir)
 
     print("\nHoàn tất pipeline thành công!")
 
@@ -213,8 +224,8 @@ def main():
     parser.add_argument("--split", type=str, default="public_test",
                         choices=["train", "test", "public_test", "private_test"],
                         help="Split dữ liệu cần chạy")
-    parser.add_argument("--task", type=int, required=True, choices=[1, 2, 3],
-                        help="Task cần chạy: 1 (Rubric), 2 (Taxonomy), 3 (Feedback)")
+    parser.add_argument("--task", type=str, required=True, choices=["1", "2", "3", "all"],
+                        help="Task cần chạy: 1 (Rubric), 2 (Taxonomy), 3 (Feedback) hoặc all")
     parser.add_argument("--model-path", type=str, default="unsloth/Qwen2.5-Coder-7B-Instruct",
                         help="Tên hoặc đường dẫn base model")
     parser.add_argument("--adapter-path", type=str, default=None,
@@ -227,6 +238,10 @@ def main():
                         help="Không dùng 4-bit quantization khi load LLM")
     parser.add_argument("--no-sandbox", action="store_true",
                         help="Tắt compiler sandbox g++")
+    parser.add_argument("--no-differential", action="store_true",
+                        help="Tắt differential testing (reference solution do LLM sinh) cho đề single_problem")
+    parser.add_argument("--cache-dir", type=str, default="./cache/differential",
+                        help="Thư mục cache bộ test sinh tự động theo đề")
 
     args = parser.parse_args()
     run_pipeline(args)

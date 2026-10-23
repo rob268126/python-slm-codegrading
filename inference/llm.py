@@ -58,10 +58,12 @@ class LLM:
             base_model, quantization_config=quant, device_map="auto",
             torch_dtype=torch.float16, trust_remote_code=True,
         )
+        self._has_adapter = bool(adapter_path)
         if adapter_path:
             from peft import PeftModel
             print(f"Loading LoRA adapter: {adapter_path}")
-            model = PeftModel.from_pretrained(model, adapter_path).merge_and_unload()
+            # Không merge để có thể tắt adapter khi sinh lời giải tham chiếu (LoRA chỉ học định dạng chấm điểm).
+            model = PeftModel.from_pretrained(model, adapter_path)
         else:
             print("[WARN] Không có adapter -> chạy base model (zero-shot prompting baseline).")
         self.model = model.eval()
@@ -91,11 +93,18 @@ class LLM:
             n_tokens = self.count_tokens(prompt)
         return prompt
 
-    def generate(self, prompt: str, max_new_tokens: int) -> str:
+    def generate(self, prompt: str, max_new_tokens: int, temperature: float = 0.0,
+                 use_adapter: bool = True, seed: int = 42) -> str:
+        """Greedy mặc định; temperature > 0 để lấy mẫu (seed cố định cho tái lập)."""
+        import contextlib
         from transformers import GenerationConfig
 
+        sample = temperature > 0
         config = GenerationConfig(
-            do_sample=False,
+            do_sample=sample,
+            temperature=temperature if sample else None,
+            top_p=0.95 if sample else None,
+            top_k=None,
             max_new_tokens=max_new_tokens,
             pad_token_id=self.tokenizer.pad_token_id,
             eos_token_id=self._eos_ids,
@@ -103,6 +112,8 @@ class LLM:
         inputs = self.tokenizer(prompt, return_tensors="pt")
         device = next(self.model.parameters()).device
         inputs = {k: v.to(device) for k, v in inputs.items()}
-        with self._torch.no_grad():
+        ctx = self.model.disable_adapter() if (self._has_adapter and not use_adapter) else contextlib.nullcontext()
+        self._torch.manual_seed(seed)
+        with self._torch.no_grad(), ctx:
             output = self.model.generate(**inputs, generation_config=config)
         return self.tokenizer.decode(output[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True).strip()

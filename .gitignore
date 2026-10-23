@@ -221,3 +221,7 @@ __marimo__/
 
 # models
 models/
+
+# datasets (kaggle, non-public datasets)
+dataset/
+cache/

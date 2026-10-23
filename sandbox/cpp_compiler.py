@@ -57,6 +57,17 @@ def _apply_msvc_compat(code: str) -> str:
     return _MSVC_ONLY_INCLUDE_RE.sub("", code)
 
 
+_COMMENT_RE = re.compile(r"//[^\n]*|/\*.*?\*/", re.DOTALL)
+
+
+def uncomment_if_fully_commented(code: str) -> str:
+    """Bài nộp comment toàn bộ vẫn được giảng viên chấm theo code bên trong (train EX02-S214: compilable=1)."""
+    if not code.strip() or _COMMENT_RE.sub("", code).strip():
+        return code
+    code = code.replace("/*", "").replace("*/", "")
+    return "\n".join(re.sub(r"^(\s*)//", r"\1", line) for line in code.splitlines())
+
+
 def _classify_errors(error_lines: List[str]) -> List[str]:
     types = []
     for line in error_lines:
@@ -85,11 +96,13 @@ def _compile_in(workdir: str, code: str, exam_type: str, std: str, timeout: int,
     result = _empty_result()
     gpp = find_gcc()
     if gpp is None:
-        result["compile_log"] = "g++ not found. Please install MinGW/g++ and add to PATH."
-        result["error_types"].append("Lỗi môi trường")
+        # Thiếu toolchain != bài lỗi biên dịch -> trạng thái "không xác định" (None).
+        result["compile_success"] = result["compilable"] = None
+        result["compile_log"] = ""
         return result
 
     src = os.path.join(workdir, "student.cpp")
+    code = uncomment_if_fully_commented(code)
     with open(src, "w", encoding="utf-8") as f:
         f.write(_apply_msvc_compat(code) if msvc_compat else code)
 
@@ -102,9 +115,8 @@ def _compile_in(workdir: str, code: str, exam_type: str, std: str, timeout: int,
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
                               encoding="utf-8", errors="replace")
     except subprocess.TimeoutExpired:
-        result["compile_log"] = "COMPILATION TIMEOUT"
-        result["errors"].append("Compilation timed out")
-        result["error_types"].append("Lỗi timeout")
+        # Compiler treo không chứng minh được code sai cú pháp -> không xác định.
+        result["compile_success"] = result["compilable"] = None
         return result
 
     # Chuẩn hoá đường dẫn file tạm để log ổn định giữa các lần chạy.
@@ -122,6 +134,7 @@ def compile_cpp(code: str, exam_type: str = "single_problem", std: str = "c++11"
                 timeout: int = 15, msvc_compat: bool = True) -> dict:
     """Biên dịch code C++ và trả về dict:
     compilable, compile_success, compile_log, errors, warnings, error_types.
+    compile_success = None nghĩa là không xác định được (thiếu g++ hoặc timeout).
     """
     with tempfile.TemporaryDirectory() as workdir:
         return _compile_in(workdir, code, exam_type, std, timeout, msvc_compat)
@@ -147,6 +160,60 @@ def run_cpp_with_input(code: str, test_input: str = "", timeout: int = 5, std: s
         except OSError as exc:
             result["runtime_error"] = str(exc)
         return result
+
+
+MAX_OUTPUT_BYTES = 200_000
+
+
+class CompiledProgram:
+    """Biên dịch một lần (single_problem) rồi chạy nhiều lần với các stdin khác nhau.
+
+        with CompiledProgram(code) as prog:
+            if prog.ok:
+                res = prog.run("5\\n", timeout=2)
+    """
+
+    def __init__(self, code: str, std: str = "c++11", msvc_compat: bool = True, compile_timeout: int = 15):
+        self._code, self._std, self._msvc, self._ct = code, std, msvc_compat, compile_timeout
+        self._tmp: Optional[tempfile.TemporaryDirectory] = None
+        self.compile_result: dict = _empty_result()
+
+    def __enter__(self) -> "CompiledProgram":
+        self._tmp = tempfile.TemporaryDirectory()
+        self.compile_result = _compile_in(self._tmp.name, self._code, "single_problem",
+                                          self._std, self._ct, self._msvc)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if self._tmp is not None:
+            self._tmp.cleanup()
+
+    @property
+    def ok(self) -> bool:
+        return self.compile_result.get("compile_success") is True
+
+    def run(self, stdin: str = "", timeout: float = 2.0) -> dict:
+        """Trả về {output, returncode, timed_out}. stdout bị cắt ở MAX_OUTPUT_BYTES."""
+        res = {"output": "", "returncode": None, "timed_out": False}
+        if not self.ok or self._tmp is None:
+            return res
+        out_path = os.path.join(self._tmp.name, "stdout.txt")
+        try:
+            with open(out_path, "wb") as out_f:
+                proc = subprocess.Popen([_binary_name(self._tmp.name)], stdin=subprocess.PIPE,
+                                        stdout=out_f, stderr=subprocess.DEVNULL, cwd=self._tmp.name)
+                try:
+                    proc.communicate(stdin.encode("utf-8"), timeout=timeout)
+                    res["returncode"] = proc.returncode
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.communicate()
+                    res["timed_out"] = True
+            with open(out_path, "rb") as f:
+                res["output"] = f.read(MAX_OUTPUT_BYTES).decode("utf-8", errors="replace")
+        except OSError:
+            pass
+        return res
 
 
 if __name__ == "__main__":
