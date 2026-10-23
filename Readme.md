@@ -11,7 +11,7 @@ Chấm điểm theo 6 tiêu chí (compilable, io_format, logic, edge_case, compl
 - Task 2: Error Classification  
 Phân loại lỗi theo đúng 10 nhãn chính thức của BTC: Lỗi biên dịch, Lỗi nhập/xuất, Lỗi logic, Lỗi vòng lặp, Lỗi mảng/chuỗi, Lỗi hàm, Lỗi edge case, Lỗi thuật toán, Lỗi hard-code, Lỗi style.  
 - Task 3: Feedback Generation  
-Sinh phản hồi sư phạm tiếng Việt có kiểm soát mức độ chi tiết (Level 1 → 4), kiểm tra compliance bằng regex + retry.  
+Sinh phản hồi sư phạm tiếng Việt có kiểm soát mức độ chi tiết (Level 1 → 4), bám bằng chứng compiler + test thực thi, lọc code / cách sửa / sao chép.  
 
 ## Cấu trúc thư mục
 ```
@@ -28,7 +28,7 @@ python-slm-codegrading/
 ├── inference/
 │   ├── llm.py                   # Wrapper model + tokenizer + prompt-budget shortener
 │   ├── grader.py                # Module chấm điểm Task 1 (Rubric) & Task 2 (Taxonomy)
-│   └── feedback_gen.py          # Module sinh phản hồi Task 3 (Few-shot RAG)
+│   └── feedback_gen.py          # Module sinh phản hồi Task 3 (bằng chứng + template theo Level)
 ├── sandbox/
 │   └── cpp_compiler.py          # C++ Compiler Sandbox (g++ ground truth + MSVC compat)
 ├── submission/                  # File nộp: taskX_submission.json & predictions.json
@@ -165,29 +165,19 @@ code_quality (0-1) -> Code có sạch, dễ đọc không?
 
 ### 5. inference/feedback_gen.py - Feedback Generator (Task 3)
 💡 Ý tưởng:  
-Sinh phản hồi tiếng Việt cho sinh viên với 4 mức độ kiểm soát:  
-- Level 1: Gợi ý nhẹ nhàng, hướng tư duy. KHÔNG code, KHÔNG lời giải  
-- Level 2: Chỉ ra vị trí lỗi, KHÔNG code sửa hoàn chỉnh  
-- Level 3: Giải thích nguyên nhân + cách khắc phục, có thể có snippet nhỏ  
-- Level 4: Cung cấp lời giải mẫu hoàn chỉnh  
-🔄 Các bước chạy:  
-generate(code, statement, errors, level, max_retries=2):  
-- Gọi LLM để sinh feedback  
-- Kiểm tra level compliance bằng regex (`is_level_compliant`)  
-- Nếu vi phạm → retry tự sửa (Self-Refine) với prompt nghiêm khắc hơn  
-- Nếu vẫn vi phạm → làm sạch code blocks để bảo vệ 100% compliance  
-_generate_once(): Sinh feedback 1 lần với prompt cụ thể cho level  
-_heuristic_check(): Kiểm tra nhanh bằng keyword (ví dụ: #include, int main(), cout)  
-_strip_code(): Xóa các code blocks để đảm bảo compliance (dùng regex)  
-📊 Output:   
-```bash
-{
-    "feedback": "Bài làm tốt...",
-    "level": 2,
-    "level_compliant": true,
-    "compliance_score": 0.95,
-    "attempts": 1
-}
+Phản hồi bám bằng chứng khách quan, không để LLM tự do viết (tránh chép lại phản hồi train / khen sai):  
+- Nhãn `taxonomy_error` lấy từ kết quả chấm Task 2 (cùng một lần chấm).  
+- Không có lỗi → "Tốt." (giống phong cách giảng viên).  
+- Level 1: template báo có vấn đề theo nhóm lỗi, KHÔNG vị trí / nguyên nhân / code.  
+- Level 2: câu bằng chứng (dòng lỗi g++, test sai: input / cần in / chương trình in) + 1-2 câu vị trí & nguyên nhân do base model viết (tắt LoRA).  
+- Level 3+: như Level 2 + gợi ý hướng sửa bằng lời.  
+🔄 Kiểm tra câu do LLM sinh (bị loại → dùng câu nguyên nhân theo nhãn):  
+- chứa code / ký tự `` ` `` / cú pháp C++; Level 2 chứa cách sửa ("sửa thành", "thay ... bằng", ...)  
+- khen "không có lỗi" khi bài có lỗi; không phải tiếng Việt; gần trùng (≥ 0.6) một phản hồi train  
+`build_feedback_prompt` chỉ dùng để tạo dữ liệu fine-tune LoRA trong notebook.  
+📊 Output: chuỗi `feedback` tiếng Việt, ví dụ:  
+```text
+Chương trình sai 2/10 test tự động, ví dụ với input "153" cần in "True" nhưng chương trình in "False". Hàm tính lũy thừa ở dòng 9 trả về sai do ép kiểu về int. (Chẩn đoán: lỗi logic.)
 ```
 
 ### 6. sandbox/cpp_compiler.py - C++ Compiler Sandbox
