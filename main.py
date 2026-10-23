@@ -62,13 +62,14 @@ def export_submission(results: List[Dict], output_dir: str) -> str:
     return pred_file
 
 
-def run_task1(grader: CppGrader, submissions: List[Submission]) -> List[Dict]:
+def run_task1(grader: CppGrader, submissions: List[Submission],
+              cached_results: Optional[List[GradingResult]] = None) -> List[Dict]:
     """Task 1: Chấm điểm Rubric 6 tiêu chí và tính tổng điểm qua Pydantic model."""
     print("\n" + "=" * 60)
     print("TASK 1: RUBRIC GRADING")
     print("=" * 60)
 
-    grading_results = grader.grade_batch(submissions)
+    grading_results = cached_results if cached_results is not None else grader.grade_batch(submissions)
 
     output = []
     for r in grading_results:
@@ -167,46 +168,51 @@ def run_pipeline(args):
     if not args.no_sandbox and find_gcc() is None:
         print("\n[WARN] Không tìm thấy g++ -> bỏ qua compiler sandbox (compilable = không xác định). "
               "Kết quả sẽ kém chính xác; hãy cài g++ (Kaggle có sẵn).")
-    grader = CppGrader(llm=llm, use_compiler_sandbox=not args.no_sandbox)
+    tester = None
+    if llm is not None and not args.no_differential:
+        from sandbox.differential import DifferentialTester
+        tester = DifferentialTester(llm, cache_dir=args.cache_dir)
+    grader = CppGrader(llm=llm, use_compiler_sandbox=not args.no_sandbox, tester=tester)
 
     train_feedback_file = str(pathlib.Path(args.dataset) / "train" / "task3_feedback.json")
     feedback_gen = FeedbackGenerator(llm=llm, train_feedback_file=train_feedback_file)
 
-    # 4. Thực thi từng task
-    results = []
-    output_dir = os.path.join(args.output_dir, f"task{args.task}")
+    # 4. Thực thi các task; chấm điểm LLM đúng một lần rồi dùng chung cho Task 1/2/3
+    tasks = [1, 2, 3] if args.task == "all" else [int(args.task)]
+    grading_results = grader.grade_batch(submissions)
 
-    if args.task == 1:
-        results = run_task1(grader, submissions)
-        # Đánh giá nội bộ nếu có ground truth
-        gold_r = split_data.gold_rubrics()
-        if gold_r:
-            metrics = evaluate_task1(results, gold_r)
-            print("\n--- Đánh giá nội bộ Task 1 ---")
-            print(f"  QWK (tổng điểm) : {metrics['qwk']:.4f}")
-            print(f"  MAE (tổng điểm) : {metrics['mae']:.4f}")
+    for task in tasks:
+        results = []
+        output_dir = os.path.join(args.output_dir, f"task{task}")
 
-    elif args.task == 2:
-        results = run_task2(grader, submissions)
-        # Đánh giá nội bộ nếu có ground truth
-        gold_t = split_data.gold_taxonomy()
-        if gold_t:
-            metrics = evaluate_task2(results, gold_t)
-            print("\n--- Đánh giá nội bộ Task 2 ---")
-            print(f"  Macro-F1 (chính): {metrics['macro_f1']:.4f}")
-            print(f"  Micro-F1        : {metrics['micro_f1']:.4f}")
+        if task == 1:
+            results = run_task1(grader, submissions, grading_results)
+            gold_r = split_data.gold_rubrics()
+            if gold_r:
+                metrics = evaluate_task1(results, gold_r)
+                print("\n--- Đánh giá nội bộ Task 1 ---")
+                print(f"  QWK (tổng điểm) : {metrics['qwk']:.4f}")
+                print(f"  MAE (tổng điểm) : {metrics['mae']:.4f}")
 
-    elif args.task == 3:
-        results = run_task3(feedback_gen, grader, submissions)
-        # Đánh giá compliance
-        level_map = {s.sample_id: s.feedback_level for s in submissions}
-        metrics = evaluate_task3_compliance(results, level_map)
-        print("\n--- Đánh giá nội bộ Task 3 ---")
-        print(f"  Level Compliance: {metrics['compliance_rate']:.2%} ({metrics['compliant']}/{metrics['total']})")
+        elif task == 2:
+            results = run_task2(grader, submissions, grading_results)
+            gold_t = split_data.gold_taxonomy()
+            if gold_t:
+                metrics = evaluate_task2(results, gold_t)
+                print("\n--- Đánh giá nội bộ Task 2 ---")
+                print(f"  Macro-F1 (chính): {metrics['macro_f1']:.4f}")
+                print(f"  Micro-F1        : {metrics['micro_f1']:.4f}")
 
-    # 5. Xuất file nộp
-    if results:
-        export_submission(results, output_dir)
+        else:
+            results = run_task3(feedback_gen, grader, submissions, grading_results)
+            level_map = {s.sample_id: s.feedback_level for s in submissions}
+            metrics = evaluate_task3_compliance(results, level_map)
+            print("\n--- Đánh giá nội bộ Task 3 ---")
+            print(f"  Level Compliance: {metrics['compliance_rate']:.2%} ({metrics['compliant']}/{metrics['total']})")
+
+        # 5. Xuất file nộp
+        if results:
+            export_submission(results, output_dir)
 
     print("\nHoàn tất pipeline thành công!")
 
@@ -218,8 +224,8 @@ def main():
     parser.add_argument("--split", type=str, default="public_test",
                         choices=["train", "test", "public_test", "private_test"],
                         help="Split dữ liệu cần chạy")
-    parser.add_argument("--task", type=int, required=True, choices=[1, 2, 3],
-                        help="Task cần chạy: 1 (Rubric), 2 (Taxonomy), 3 (Feedback)")
+    parser.add_argument("--task", type=str, required=True, choices=["1", "2", "3", "all"],
+                        help="Task cần chạy: 1 (Rubric), 2 (Taxonomy), 3 (Feedback) hoặc all")
     parser.add_argument("--model-path", type=str, default="unsloth/Qwen2.5-Coder-7B-Instruct",
                         help="Tên hoặc đường dẫn base model")
     parser.add_argument("--adapter-path", type=str, default=None,
@@ -232,6 +238,10 @@ def main():
                         help="Không dùng 4-bit quantization khi load LLM")
     parser.add_argument("--no-sandbox", action="store_true",
                         help="Tắt compiler sandbox g++")
+    parser.add_argument("--no-differential", action="store_true",
+                        help="Tắt differential testing (reference solution do LLM sinh) cho đề single_problem")
+    parser.add_argument("--cache-dir", type=str, default="./cache/differential",
+                        help="Thư mục cache bộ test sinh tự động theo đề")
 
     args = parser.parse_args()
     run_pipeline(args)

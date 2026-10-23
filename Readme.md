@@ -3,7 +3,7 @@
 Chấm điểm và đánh giá bài nộp lập trình C++ của sinh viên:    
 - LLM Fine-tuned (Qwen2.5-Coder) với LoRA adapter để chấm điểm theo rubric chi tiết
 - Compiler Sandbox (g++) để xác thực biên dịch thực tế, đảm bảo tính chính xác
-- Ensemble Strategy kết hợp nhiều "judges" để tăng độ tin cậy
+- Differential testing: LLM sinh lời giải tham chiếu + test input, chạy code sinh viên để lấy pass-rate
 - Feedback Generator sinh phản hồi tiếng Việt theo 4 mức độ kiểm soát (từ gợi ý nhẹ đến lời giải đầy đủ)
 3 tasks chính:  
 - Task 1: Rubric Grading  
@@ -11,7 +11,7 @@ Chấm điểm theo 6 tiêu chí (compilable, io_format, logic, edge_case, compl
 - Task 2: Error Classification  
 Phân loại lỗi theo đúng 10 nhãn chính thức của BTC: Lỗi biên dịch, Lỗi nhập/xuất, Lỗi logic, Lỗi vòng lặp, Lỗi mảng/chuỗi, Lỗi hàm, Lỗi edge case, Lỗi thuật toán, Lỗi hard-code, Lỗi style.  
 - Task 3: Feedback Generation  
-Sinh phản hồi sư phạm tiếng Việt có kiểm soát mức độ chi tiết (Level 1 → 4), tích hợp Local JEV Noul Verifier.  
+Sinh phản hồi sư phạm tiếng Việt có kiểm soát mức độ chi tiết (Level 1 → 4), kiểm tra compliance bằng regex + retry.  
 
 ## Cấu trúc thư mục
 ```
@@ -28,7 +28,6 @@ python-slm-codegrading/
 ├── inference/
 │   ├── llm.py                   # Wrapper model + tokenizer + prompt-budget shortener
 │   ├── grader.py                # Module chấm điểm Task 1 (Rubric) & Task 2 (Taxonomy)
-│   ├── ensemble.py              # Chiến lược ensemble kết hợp nhiều judges
 │   └── feedback_gen.py          # Module sinh phản hồi Task 3 (Few-shot RAG)
 ├── sandbox/
 │   └── cpp_compiler.py          # C++ Compiler Sandbox (g++ ground truth + MSVC compat)
@@ -174,7 +173,7 @@ Sinh phản hồi tiếng Việt cho sinh viên với 4 mức độ kiểm soát
 🔄 Các bước chạy:  
 generate(code, statement, errors, level, max_retries=2):  
 - Gọi LLM để sinh feedback  
-- Kiểm tra level compliance bằng Local JEV Noul Verifier (dùng chính Qwen 7B) hoặc heuristic  
+- Kiểm tra level compliance bằng regex (`is_level_compliant`)  
 - Nếu vi phạm → retry tự sửa (Self-Refine) với prompt nghiêm khắc hơn  
 - Nếu vẫn vi phạm → làm sạch code blocks để bảo vệ 100% compliance  
 _generate_once(): Sinh feedback 1 lần với prompt cụ thể cho level  

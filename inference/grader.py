@@ -20,14 +20,17 @@ from core.data import Submission, has_compile_error
 from core.schema import (
     LABEL_COMPILE,
     LABEL_HARDCODE,
+    LABEL_IO,
     LABEL_LOGIC,
     LABEL_LOOP,
     LABEL_STYLE,
+    RUBRIC_DIMS,
     GradingResult,
     Rubric,
     normalize_labels,
 )
 from sandbox.cpp_compiler import compile_cpp
+from sandbox.differential import filter_exam_reports, summarize_report
 
 
 class LLMJudgeResponse(BaseModel):
@@ -52,17 +55,92 @@ class LLMJudgeResponse(BaseModel):
         return data
 
 
+def apply_test_evidence(rubric, errors: List[str], report) -> List[str]:
+    """Ghi đè các chiều rubric phụ thuộc hành vi chạy bằng pass-rate của test thực thi. Trả về taxonomy đã chỉnh.
+
+    logic/edge_case dùng pass-rate "lỏng" (đúng đáp án, bỏ qua lời nhắc/hoa-thường) để lỗi định dạng
+    không kéo theo mất điểm logic; io_format chỉ bị trừ khi pass-rate chính xác thấp hơn pass-rate lỏng.
+    """
+    stats = summarize_report(report)
+    if stats is None or not getattr(rubric, "compilable", 1):
+        return errors
+    rate, exact_rate, timeouts = stats["lenient_rate"], stats["rate"], stats["timeouts"]
+    errors = list(errors)
+
+    if rate == 1.0:
+        rubric.logic = 4
+        rubric.edge_case = max(rubric.edge_case, 1)
+        rubric.complexity = 1
+        errors = [e for e in errors if e != LABEL_LOGIC]
+    elif rate >= 0.75:
+        rubric.logic = 3
+        rubric.edge_case = min(rubric.edge_case, 1)
+        errors.append(LABEL_LOGIC)
+    elif rate >= 0.5:
+        rubric.logic = 2
+        rubric.edge_case = min(rubric.edge_case, 1)
+        errors.append(LABEL_LOGIC)
+    else:
+        rubric.logic = 1 if rate > 0 else 0
+        rubric.edge_case = 0
+        errors.append(LABEL_LOGIC)
+
+    if rate == 0:
+        rubric.io_format = 0
+    elif exact_rate < rate:
+        rubric.io_format = 0
+        errors.append(LABEL_IO)
+    elif exact_rate == 1.0:
+        rubric.io_format = 1
+        errors = [e for e in errors if e != LABEL_IO]
+
+    if timeouts:
+        # Input sinh tự động đều nhỏ (< 300 ký tự) -> timeout gần như chắc chắn là vòng lặp vô hạn.
+        rubric.complexity = 0
+        errors.append(LABEL_LOOP)
+    return errors
+
+
 class CppGrader:
     """Module chấm điểm C++ sử dụng LLM Fine-tuned (Qwen2.5-Coder LoRA) kết hợp Compiler Sandbox."""
 
-    def __init__(self, llm=None, use_compiler_sandbox: bool = True):
+    def __init__(self, llm=None, use_compiler_sandbox: bool = True, tester=None, report_in_prompt: bool = False):
         """
         Args:
             llm: Instance của inference.llm.LLM (hoặc None để chạy heuristic baseline).
             use_compiler_sandbox: Nếu True và submission chưa có compile_log, sẽ gọi g++ biên dịch thực tế.
+            tester: DifferentialTester sinh test_report khi dataset không cung cấp (chỉ đề single_problem).
+            report_in_prompt: Đưa test_report vào prompt LLM (chỉ bật khi adapter được train với test_report).
         """
         self.llm = llm
         self.use_compiler_sandbox = use_compiler_sandbox
+        self.tester = tester
+        self.report_in_prompt = report_in_prompt
+        self._reported: set = set()
+
+    def _ensure_test_report(self, sub: Submission) -> Submission:
+        if (sub.test_report or self.tester is None or sub.is_multi_problem or sub.compile_failed
+                or sub.sample_id in self._reported):
+            return sub
+        sub.test_report = self.tester.build_report(sub.exam_id, sub.statement, sub.code)
+        self._reported.add(sub.sample_id)
+        return sub
+
+    def prepare_test_reports(self, submissions: Sequence[Submission]) -> None:
+        """Compile + chạy test cho cả lô trước, rồi kiểm tra chéo bộ test theo từng đề (bỏ test sai)."""
+        if self.tester is None:
+            return
+        by_exam: dict = {}
+        for sub in submissions:
+            if sub.is_multi_problem or sub.test_report:
+                continue
+            self._ensure_compile_info(sub)
+            self._ensure_test_report(sub)
+            by_exam.setdefault(sub.exam_id, []).append(sub)
+        for exam_id, subs in by_exam.items():
+            filtered = filter_exam_reports([s.test_report for s in subs], exam_id=exam_id)
+            for s, rep in zip(subs, filtered):
+                s.test_report = rep
 
     def build_prompt(self, statement: str, code: str, compile_log: str, test_report: str = "") -> str:
         """Xây dựng prompt ChatML format khớp với định dạng lúc huấn luyện LoRA."""
@@ -80,7 +158,7 @@ class CppGrader:
 
         prompt = (
             f"<|im_start|>system\n"
-            f"You are an expert C++ code grader acting as a JUDGE (Local JEV Engine: Score + Choice).\n"
+            f"You are an expert C++ code grader acting as a JUDGE.\n"
             f"You have ACTUAL COMPILATION RESULTS as ground truth - trust them above all.\n"
             f"Grading rubric (Score Dimensions):\n"
             f"- compilable (0-1): Does code compile? Use compiler result.\n"
@@ -103,7 +181,7 @@ class CppGrader:
             f"Output ONLY valid JSON with keys \"rubric\" and \"taxonomy_error\":\n"
             f"{{\"rubric\": {{\"compilable\": 1, \"io_format\": 1, \"logic\": 2, \"edge_case\": 1, \"complexity\": 1, \"code_quality\": 1}}, \"taxonomy_error\": [...]}}<|im_end|>\n"
             f"<|im_start|>user\n{input_text}<|im_end|>\n"
-            f"<|im_start|>assistant\n{{"
+            f"<|im_start|>assistant\n"
         )
         return prompt
 
@@ -146,27 +224,6 @@ class CppGrader:
         }
         errors: List[str] = []
 
-        # Điều chỉnh theo test_report nếu có
-        if isinstance(sub.test_report, list) and len(sub.test_report) > 0:
-            passed = sum(1 for t in sub.test_report if isinstance(t, dict) and t.get("passed", False))
-            total = len(sub.test_report)
-            rate = passed / total if total > 0 else 0.0
-
-            if rate == 1.0:
-                rubric_dict["logic"], rubric_dict["edge_case"] = 4, 2
-            elif rate >= 0.75:
-                rubric_dict["logic"], rubric_dict["edge_case"] = 3, 1
-            elif rate >= 0.5:
-                rubric_dict["logic"], rubric_dict["edge_case"] = 2, 1
-            elif rate > 0:
-                rubric_dict["logic"], rubric_dict["edge_case"] = 1, 0
-                errors.append(LABEL_LOGIC)
-            else:
-                rubric_dict["logic"], rubric_dict["edge_case"] = 1, 0
-                rubric_dict["io_format"] = 0
-                errors.append(LABEL_LOGIC)
-                errors.append(LABEL_IO)
-
         # Heuristic phát hiện lỗi logic / vòng lặp
         if "while(true)" in code_lower or "while(1)" in code_lower:
             errors.append(LABEL_LOOP)
@@ -178,17 +235,37 @@ class CppGrader:
             errors.append(LABEL_STYLE)
             rubric_dict["code_quality"] = 0
 
-        # Phát hiện hardcode tên file csv hoặc include file csv trong đề multi_problem
-        if sub.is_multi_problem and (re.search(r'"[^"\n]*\.csv"', code, re.IGNORECASE) or "#include" in code and ".csv" in code):
-            errors.append(LABEL_HARDCODE)
+        # Hard-code tên file csv trong các hàm của đề multi_problem (main tự viết để test thì được phép)
+        if sub.is_multi_problem:
+            body = re.split(r"\bint\s+main\s*\(", code, maxsplit=1)[0]
+            if re.search(r'"[^"\n]*\.csv"', body, re.IGNORECASE) or re.search(r'#\s*include\s*"[^"\n]*\.csv"', code, re.IGNORECASE):
+                errors.append(LABEL_HARDCODE)
 
-        return GradingResult(
+        res = GradingResult(
             sample_id=sub.sample_id,
             rubric=rubric_dict,
             taxonomy_error=errors,
             rationale="Heuristic grading based on compiler log and code analysis.",
             compiler_verified=True,
         )
+        if sub.test_report:
+            res.taxonomy_error = normalize_labels(apply_test_evidence(res.rubric, res.taxonomy_error, sub.test_report))
+            res.total_score = res.rubric.total_score
+        return res
+
+    @staticmethod
+    def _salvage_json(text: str):
+        """Cứu JSON hỏng/bị cắt: lấy từng chiều rubric và các nhãn hợp lệ bằng regex."""
+        rubric = {}
+        for dim in RUBRIC_DIMS:
+            m = re.search(rf'"{dim}"\s*:\s*(\d+)', text)
+            if m:
+                rubric[dim] = int(m.group(1))
+        if not rubric:
+            return None
+        labels = normalize_labels(re.findall(r'"([^"\n]+)"', text.split('"taxonomy_error"', 1)[-1])) \
+            if '"taxonomy_error"' in text else []
+        return {"rubric": rubric, "taxonomy_error": labels}
 
     def _parse_llm_response(self, response: str, sub: Submission) -> GradingResult:
         """Parse JSON từ response của model và chuẩn hóa qua Pydantic."""
@@ -199,42 +276,39 @@ class CppGrader:
         if not clean.startswith("{"):
             clean = "{" + clean
 
-        # Tìm JSON object chứa rubric hoặc errors
-        match = re.search(r"\{[^{}]*\"rubric\"[^{}]*\{[^}]*\}[^{}]*\}", clean, re.DOTALL)
-        if not match:
-            match = re.search(r"\{.*\}", clean, re.DOTALL)
-
-        if not match:
-            return self.heuristic_grade(sub)
-
-        try:
-            parsed_json = json.loads(match.group())
-        except Exception:
-            # Fallback an toàn sang heuristic nếu JSON hoàn toàn không parse được
+        parsed_json = None
+        match = re.search(r"\{[^{}]*\"rubric\"[^{}]*\{[^}]*\}[^{}]*\}", clean, re.DOTALL) \
+            or re.search(r"\{.*\}", clean, re.DOTALL)
+        if match:
+            try:
+                parsed_json = json.loads(match.group())
+            except Exception:
+                parsed_json = None
+        if not isinstance(parsed_json, dict) or not isinstance(parsed_json.get("rubric"), dict):
+            parsed_json = self._salvage_json(clean)
+        if parsed_json is None:
             return self.heuristic_grade(sub)
 
         # Áp dụng ground truth compiler thực tế
         sub = self._ensure_compile_info(sub)
         is_compile_failed = sub.compile_failed is True or has_compile_error(sub.compile_log)
+        heuristic_res = self.heuristic_grade(sub)
 
-        # Đồng bộ compilable vào raw dict TRƯỚC KHI Pydantic validate
-        # để compiler ground truth bảo vệ logic/edge_case không bị zero-out oan
-        if "rubric" in parsed_json and isinstance(parsed_json["rubric"], dict):
-            if is_compile_failed:
-                parsed_json["rubric"]["compilable"] = 0
-            elif parsed_json["rubric"].get("compilable", 0) == 0:
-                parsed_json["rubric"]["compilable"] = 1
+        # Chiều nào LLM bỏ sót thì lấy theo heuristic (mặc định trung vị), không để Pydantic điền 0.
+        # Đồng bộ compilable TRƯỚC KHI validate để prerequisite policy không zero-out oan.
+        raw_rubric = {**heuristic_res.rubric.to_dict(), **parsed_json["rubric"]}
+        raw_rubric["compilable"] = 0 if is_compile_failed else 1
+        parsed_json["rubric"] = raw_rubric
 
         try:
             judge_res = LLMJudgeResponse.model_validate(parsed_json)
         except Exception:
-            return self.heuristic_grade(sub)
+            return heuristic_res
 
         # Bổ sung các nhãn lỗi code-level khách quan (hard-code, style) nếu phát hiện trong code
-        heuristic_res = self.heuristic_grade(sub)
         combined_errors = set(judge_res.taxonomy_error)
         for err in heuristic_res.taxonomy_error:
-            if err in (LABEL_HARDCODE, LABEL_STYLE, LABEL_LOOP):
+            if err in (LABEL_HARDCODE, LABEL_STYLE):
                 combined_errors.add(err)
 
         res = GradingResult(
@@ -244,21 +318,28 @@ class CppGrader:
             rationale=clean[:300],
         )
         res.apply_compiler_ground_truth(is_compile_failed)
+        if not is_compile_failed and sub.test_report:
+            res.taxonomy_error = normalize_labels(
+                apply_test_evidence(res.rubric, res.taxonomy_error, sub.test_report))
+            res.total_score = res.rubric.total_score
         return res
 
     def grade_one(self, sub: Submission) -> GradingResult:
         """Chấm điểm 1 bài nộp."""
+        sub = self._ensure_compile_info(sub)
+        sub = self._ensure_test_report(sub)
+
         if self.llm is None:
             return self.heuristic_grade(sub)
 
-        sub = self._ensure_compile_info(sub)
+        report_text = json.dumps(sub.test_report, ensure_ascii=False) if (sub.test_report and self.report_in_prompt) else ""
 
         def _render(stmt: str, code: str) -> str:
             return self.build_prompt(
                 statement=stmt,
                 code=code,
                 compile_log=sub.compile_log,
-                test_report=json.dumps(sub.test_report) if sub.test_report else "",
+                test_report=report_text,
             )
 
         prompt = self.llm.fit_prompt(_render, sub.statement, sub.code)
@@ -269,6 +350,7 @@ class CppGrader:
         """Chấm điểm hàng loạt danh sách submission."""
         results: List[GradingResult] = []
         n = len(submissions)
+        self.prepare_test_reports(submissions)
         for i, sub in enumerate(submissions):
             if (i + 1) % 10 == 0 or i == 0 or i == n - 1:
                 print(f"  [Grader] [{i+1}/{n}] Grading {sub.sample_id} ({sub.exam_id})...")

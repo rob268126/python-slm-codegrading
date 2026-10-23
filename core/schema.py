@@ -242,8 +242,15 @@ class GradingResult(BaseModel):
 # Đảm bảo 100% khớp schema BTC yêu cầu cho file predictions.json
 # ---------------------------------------------------------------------------
 class Task1Output(BaseModel):
-    rubric: Dict[str, int]
+    rubric: Rubric
     total_score: int
+
+    @model_validator(mode="after")
+    def _check_total(self) -> "Task1Output":
+        if self.total_score != self.rubric.total_score:
+            raise ValueError(
+                f"total_score={self.total_score} không khớp tổng rubric={self.rubric.total_score}")
+        return self
 
 
 class Task1Submission(BaseModel):
@@ -267,7 +274,12 @@ class Task2Submission(BaseModel):
 
 class Task3Output(BaseModel):
     taxonomy_error: List[str]
-    feedback: str
+    feedback: str = Field(min_length=1)
+
+    @field_validator("feedback", mode="before")
+    @classmethod
+    def _strip_feedback(cls, v):
+        return v.strip() if isinstance(v, str) else v
 
     @field_validator("taxonomy_error", mode="before")
     @classmethod
