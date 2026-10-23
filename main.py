@@ -1,303 +1,251 @@
 """
-main.py -> Pipeline chấm điểm tự động C++
-Chạy: python main.py --dataset ./dataset --task 1 --split public_test
+main.py -> Pipeline Chấm điểm và Phản hồi Tự động C++
+Hỗ trợ cả 3 tasks của AI Challenge:
+- Task 1: Rubric Grading (QWK metric chính)
+- Task 2: Error Classification (Macro-F1 metric chính)
+- Task 3: Pedagogical Feedback Generation (Level Compliance & Chẩn đoán)
+
+Cách chạy:
+- Chạy với LLM LoRA trên GPU (Kaggle / Local):
+    python main.py --task 1 --split public_test --adapter-path ./models/lora_adapter_v3
+- Chạy thử nghiệm nhanh bằng Heuristic (không cần GPU / không cần tải weights):
+    python main.py --task 1 --split public_test --heuristic
 """
+from __future__ import annotations
+
+import argparse
 import json
 import os
-import sys
-import argparse
 import pathlib
-import torch
-from typing import List, Dict
+import sys
+from typing import Dict, List, Optional
 
-sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from inference.grader import CppGrader, GradingResult
+# Đảm bảo import được các module trong repo
+REPO_ROOT = pathlib.Path(__file__).resolve().parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+# Đảm bảo in tiếng Việt mượt mà trên console Windows (cp1252)
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+from core.data import Submission, build_submissions, load_split
+from core.schema import (
+    Task1Output,
+    Task1Submission,
+    Task2Output,
+    Task2Submission,
+    Task3Output,
+    Task3Submission,
+)
+from evaluation.metrics import (
+    evaluate_task1,
+    evaluate_task2,
+    evaluate_task3_compliance,
+)
 from inference.feedback_gen import FeedbackGenerator
-from sandbox.cpp_compiler import compile_cpp
-from evaluation.metrics import evaluate_all
-
-VALID_LABELS = {
-    "Lỗi biên dịch", "Lỗi logic", "Lỗi vòng lặp", "Lỗi hàm", "Lỗi I/O",
-    "Lỗi bộ nhớ", "Lỗi kiểu dữ liệu", "Lỗi thuật toán", "Lỗi xử lý biên", "Lỗi cú pháp"
-}
-
-LABEL_MAP = {
-    "Lỗi biến/hàm chưa khai báo": "Lỗi cú pháp",
-    "Lỗi liên kết (missing main)": "Lỗi biên dịch",
-    "Lỗi biên dịch khác": "Lỗi biên dịch",
-    "Không có lỗi": None,
-    "Lỗi syntax": "Lỗi cú pháp",
-    "Lỗi logic sai": "Lỗi logic",
-}
-
-def sanitize_taxonomy_errors(errors_list):
-    """Lọc và map các nhãn lỗi về đúng 10 nhãn chính thức."""
-    if not isinstance(errors_list, list):
-        return []
-    
-    valid = []
-    for e in errors_list:
-        if not isinstance(e, str):
-            continue
-        e = e.strip()
-        
-        if e in VALID_LABELS:
-            if e not in valid:
-                valid.append(e)
-        elif e in LABEL_MAP and LABEL_MAP[e] is not None:
-            mapped = LABEL_MAP[e]
-            if mapped not in valid:
-                valid.append(mapped)
-    
-    return valid
-
-def load_dataset(dataset_root: str, split: str = "train") -> dict:
-    """Load dataset từ thư mục train/test/public_test/private_test"""
-    root = pathlib.Path(dataset_root) / split
-    
-    if not root.exists():
-        root = pathlib.Path(dataset_root)
-    
-    data = {}
-    for fname in ["task1_grading.json", "task2_error_taxonomy.json",
-                  "task3_feedback.json", "task3_requested_levels.json",
-                  "exams.json", "label_space.json"]:
-        fpath = root / fname
-        if fpath.exists():
-            with open(fpath, encoding="utf-8") as f:
-                data[fname] = json.load(f)
-    
-    # Load submissions
-    submissions_dir = root / "submissions"
-    if submissions_dir.exists():
-        data["submissions_dir"] = submissions_dir
-    
-    return data
+from inference.grader import CppGrader, GradingResult
+from sandbox.cpp_compiler import find_gcc
 
 
-def export_submission(results: List[Dict], task: int, output_dir: str):
-    """Xuất submission JSON"""
+def export_submission(results: List[Dict], output_dir: str) -> str:
+    """Xuất duy nhất file predictions.json chuẩn theo quy định nộp của BTC."""
     os.makedirs(output_dir, exist_ok=True)
-    
-    submission_data = results
-    
-    output_file = f"task{task}_submission.json"
-    output_path = os.path.join(output_dir, output_file)
-    
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(submission_data, f, ensure_ascii=False, indent=2)
-    
-    print(f"Saved {len(submission_data)} predictions → {output_path}")
-    return output_path
+    pred_file = os.path.join(output_dir, "predictions.json")
+    with open(pred_file, "w", encoding="utf-8") as f:
+        json.dump(results, f, ensure_ascii=False, indent=2)
+
+    print(f"\n[Export] Đã lưu {len(results)} kết quả:")
+    print(f"  -> {pred_file} (File nộp Leaderboard)")
+    return pred_file
 
 
-def build_submissions(data: dict) -> List[Dict]:
-    """Build danh sách submissions dùng chung cho Task 1, 2, 3"""
-    task1_data = data.get("task1_grading.json", {})
-    samples = task1_data.get("samples", [])
-    exams_data = data.get("exams.json", {})
-    
-    submissions = []
-    for s in samples:
-        inp = s["input"]
-        code_file = inp.get("code_file", "")
-        
-        # Xử lý pat
-        if "submissions_dir" in data:
-            code_path = data["submissions_dir"].parent / code_file
-            if not code_path.exists():
-                code_path = data["submissions_dir"] / pathlib.Path(code_file).name
-        else:
-            code_path = pathlib.Path(code_file)
-        
-        if not code_path.exists():
-            print(f"  File not found: {code_file}")
-            continue
-        
-        code = code_path.read_text(encoding="utf-8")
-        exam_id = inp.get("exam_id", "")
-        
-        # Lấy statement từ exams.json
-        statement = ""
-        for exam in exams_data.get("exams", []):
-            if exam.get("exam_id") == exam_id:
-                statement = exam.get("statement", "")
-                break
-        
-        submissions.append({
-            "sample_id": s["sample_id"],
-            "exam_id": exam_id,
-            "statement": statement,
-            "code": code,
-            "compile_log": inp.get("compile_log", ""),
-            "test_report": inp.get("test_report", "")
-        })
-    
-    return submissions
+def run_task1(grader: CppGrader, submissions: List[Submission],
+              cached_results: Optional[List[GradingResult]] = None) -> List[Dict]:
+    """Task 1: Chấm điểm Rubric 6 tiêu chí và tính tổng điểm qua Pydantic model."""
+    print("\n" + "=" * 60)
+    print("TASK 1: RUBRIC GRADING")
+    print("=" * 60)
 
-
-def process_task1(grader: CppGrader, data: dict, split: str) -> List[Dict]:
-    """Task 1: Rubric Grading - tự tính lại total_score"""
-    print("\n" + "#"*60)
-    print(f"TASK 1: RUBRIC GRADING ({split})")
-    
-    submissions = build_submissions(data)
-    
-    results = grader.grade_batch(submissions)
-    results = grader.apply_prerequisite_policy(results, submissions)
+    grading_results = cached_results if cached_results is not None else grader.grade_batch(submissions)
 
     output = []
-    for r in results:
-        rubric = r.rubric
-        total_score = sum(
-            rubric.get(d, 0) 
-            for d in ["compilable", "io_format", "logic", "edge_case", "complexity", "code_quality"]
+    for r in grading_results:
+        rubric_dict = r.rubric.to_dict() if hasattr(r.rubric, "to_dict") else dict(r.rubric)
+        item = Task1Submission(
+            sample_id=r.sample_id,
+            output=Task1Output(
+                rubric=rubric_dict,
+                total_score=r.total_score,
+            ),
         )
-        
-        output.append({
-            "sample_id": r.sample_id,
-            "output": {
-                "rubric": rubric,
-                "total_score": total_score
-            }
-        })
-    
+        output.append(item.model_dump())
     return output
 
 
-def process_task2(grader: CppGrader, data: dict, split: str) -> List[Dict]:
-    """Task 2: Error Classification"""
-    print("\n" + "#"*60)
-    print(f"TASK 2: ERROR CLASSIFICATION ({split})")
-    
-    submissions = build_submissions(data)
-    
-    results = grader.grade_batch(submissions)
-    results = grader.apply_prerequisite_policy(results, submissions)
+def run_task2(grader: CppGrader, submissions: List[Submission],
+              cached_results: Optional[List[GradingResult]] = None) -> List[Dict]:
+    """Task 2: Phân loại lỗi đa nhãn (Taxonomy 10 nhãn) qua Pydantic model."""
+    print("\n" + "=" * 60)
+    print("TASK 2: ERROR CLASSIFICATION")
+    print("=" * 60)
+
+    grading_results = cached_results if cached_results is not None else grader.grade_batch(submissions)
 
     output = []
-    for r in results:
-        cleaned_errors = sanitize_taxonomy_errors(r.errors)
-        
-        output.append({
-            "sample_id": r.sample_id,
-            "output": {
-                "taxonomy_error": cleaned_errors  # Dùng cleaned_errors thay vì r.errors
-            }
-        })
-    
+    for r in grading_results:
+        item = Task2Submission(
+            sample_id=r.sample_id,
+            output=Task2Output(taxonomy_error=r.taxonomy_error),
+        )
+        output.append(item.model_dump())
     return output
 
 
-def process_task3(feedback_gen: FeedbackGenerator, grader: CppGrader, 
-                  data: dict, split: str) -> List[Dict]:
-    """Task 3: Feedback Generation + RAG 1-Shot"""
-    print("\n" + "#"*60)
-    print(f"TASK 3: FEEDBACK GENERATION ({split})")
-    
-    # Load requested levels
-    task3_levels = data.get("task3_requested_levels.json", {})
-    if isinstance(task3_levels, list):
-        level_map = {item["sample_id"]: item.get("requested_level", 2) for item in task3_levels}
-    else:
-        level_map = {}
-    
-    submissions = build_submissions(data)
-    
-    # Lấy errors từ grader
-    results = grader.grade_batch(submissions)
-    results = grader.apply_prerequisite_policy(results, submissions)
-    
-    # Map sample_id -> errors
-    error_map = {r.sample_id: r.errors for r in results}
-    
+def run_task3(feedback_gen: FeedbackGenerator, grader: CppGrader,
+              submissions: List[Submission],
+              cached_results: Optional[List[GradingResult]] = None) -> List[Dict]:
+    """Task 3: Tự chẩn đoán lỗi taxonomy và sinh phản hồi sư phạm qua Pydantic model."""
+    print("\n" + "=" * 60)
+    print("TASK 3: PEDAGOGICAL FEEDBACK GENERATION")
+    print("=" * 60)
+
+    grading_results = cached_results if cached_results is not None else grader.grade_batch(submissions)
+    error_map = {r.sample_id: r.taxonomy_error for r in grading_results}
+
     output = []
+    n = len(submissions)
     for i, sub in enumerate(submissions):
-        sid = sub["sample_id"]
-        level = level_map.get(sid, 2)
-        errors = error_map.get(sid, [])
-        
-        print(f"  [{i+1}/{len(submissions)}] {sid} (Level {level})")
-        
-        result = feedback_gen.generate(
-            code=sub["code"],
-            statement=sub["statement"],
-            errors=errors,
-            level=level
-        )
+        if (i + 1) % 10 == 0 or i == 0 or i == n - 1:
+            print(f"  [Task 3] [{i+1}/{n}] Sinh feedback cho {sub.sample_id} (Level {sub.feedback_level})...")
 
-        cleaned_errors = sanitize_taxonomy_errors(errors)
-        
-        output.append({
-            "sample_id": sid,
-            "output": {
-                "taxonomy_error": cleaned_errors,  # Dùng cleaned_errors thay vì errors
-                "feedback": result["feedback"]
-            }
-        })
-    
+        errors = error_map.get(sub.sample_id, [])
+        feedback = feedback_gen.generate_one(sub, errors=errors, level=sub.feedback_level)
+
+        item = Task3Submission(
+            sample_id=sub.sample_id,
+            output=Task3Output(
+                taxonomy_error=errors,
+                feedback=feedback,
+            ),
+        )
+        output.append(item.model_dump())
     return output
+
 
 def run_pipeline(args):
-    """Chạy pipeline"""
-    print("="*60)
-    print("C++ CODE GRADING PIPELINE")
-    print(f"Dataset: {args.dataset}")
-    print(f"Split: {args.split}")
-    print(f"Task: {args.task}")
-    
+    """Điều phối toàn bộ quy trình."""
+    print("*" * 60)
+    print("C++ SLM CODE GRADING PIPELINE")
+    print(f"  Dataset  : {args.dataset}")
+    print(f"  Split    : {args.split}")
+    print(f"  Task     : {args.task}")
+    print(f"  Mode     : {'Heuristic (No GPU)' if args.heuristic else 'LLM Model'}")
+    print("*" * 60)
+
     # 1. Load dataset
-    data = load_dataset(args.dataset, args.split)
-    print(f"Loaded dataset from {args.dataset}/{args.split}")
-    
-    # 2. Load model
-    grader = CppGrader(
-        base_model=args.model_path,
-        adapter_path=args.adapter_path,
-        device="cuda" if torch.cuda.is_available() else "cpu"
-    )
-    
-    # 3. Process theo task
-    results = []
-    if args.task == 1:
-        results = process_task1(grader, data, args.split)
-        output_dir = os.path.join(args.output_dir, "task1")
-    elif args.task == 2:
-        results = process_task2(grader, data, args.split)
-        output_dir = os.path.join(args.output_dir, "task2")
-    elif args.task == 3:
-        # TODO: Load train_examples cho RAG
-        # train_examples = load_task3_train_examples(...)
-        feedback_gen = FeedbackGenerator(
-            model=grader.model,
-            tokenizer=grader.tokenizer,
-            # train_examples=train_examples   # bổ sung synthesis data
-        )
-        results = process_task3(feedback_gen, grader, data, args.split)
-        output_dir = os.path.join(args.output_dir, "task3")
-    
-    # 4. Export submission
-    if results:
-        export_submission(results, args.task, output_dir)
-    
-    print("\nDone")
+    split_data = load_split(args.dataset, args.split)
+    submissions = build_submissions(split_data)
+    print(f"\nLoaded {len(submissions)} submissions từ split '{args.split}'")
+
+    # 2. Khởi tạo LLM nếu không chạy chế độ heuristic
+    llm = None
+    if not args.heuristic:
+        try:
+            from inference.llm import LLM
+            llm = LLM(
+                base_model=args.model_path,
+                adapter_path=args.adapter_path,
+                load_in_4bit=not args.no_quant,
+            )
+        except Exception as e:
+            print(f"\n[WARN] Không thể load LLM ({e}). Tự động fallback sang chế độ Heuristic.")
+            llm = None
+
+    # 3. Khởi tạo Grader và FeedbackGenerator
+    if not args.no_sandbox and find_gcc() is None:
+        print("\n[WARN] Không tìm thấy g++ -> bỏ qua compiler sandbox (compilable = không xác định). "
+              "Kết quả sẽ kém chính xác; hãy cài g++ (Kaggle có sẵn).")
+    tester = None
+    if llm is not None and not args.no_differential:
+        from sandbox.differential import DifferentialTester
+        tester = DifferentialTester(llm, cache_dir=args.cache_dir)
+    grader = CppGrader(llm=llm, use_compiler_sandbox=not args.no_sandbox, tester=tester)
+
+    train_feedback_file = str(pathlib.Path(args.dataset) / "train" / "task3_feedback.json")
+    feedback_gen = FeedbackGenerator(llm=llm, train_feedback_file=train_feedback_file)
+
+    # 4. Thực thi các task; chấm điểm LLM đúng một lần rồi dùng chung cho Task 1/2/3
+    tasks = [1, 2, 3] if args.task == "all" else [int(args.task)]
+    grading_results = grader.grade_batch(submissions)
+
+    for task in tasks:
+        results = []
+        output_dir = os.path.join(args.output_dir, f"task{task}")
+
+        if task == 1:
+            results = run_task1(grader, submissions, grading_results)
+            gold_r = split_data.gold_rubrics()
+            if gold_r:
+                metrics = evaluate_task1(results, gold_r)
+                print("\n--- Đánh giá nội bộ Task 1 ---")
+                print(f"  QWK (tổng điểm) : {metrics['qwk']:.4f}")
+                print(f"  MAE (tổng điểm) : {metrics['mae']:.4f}")
+
+        elif task == 2:
+            results = run_task2(grader, submissions, grading_results)
+            gold_t = split_data.gold_taxonomy()
+            if gold_t:
+                metrics = evaluate_task2(results, gold_t)
+                print("\n--- Đánh giá nội bộ Task 2 ---")
+                print(f"  Macro-F1 (chính): {metrics['macro_f1']:.4f}")
+                print(f"  Micro-F1        : {metrics['micro_f1']:.4f}")
+
+        else:
+            results = run_task3(feedback_gen, grader, submissions, grading_results)
+            level_map = {s.sample_id: s.feedback_level for s in submissions}
+            metrics = evaluate_task3_compliance(results, level_map)
+            print("\n--- Đánh giá nội bộ Task 3 ---")
+            print(f"  Level Compliance: {metrics['compliance_rate']:.2%} ({metrics['compliant']}/{metrics['total']})")
+
+        # 5. Xuất file nộp
+        if results:
+            export_submission(results, output_dir)
+
+    print("\nHoàn tất pipeline thành công!")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Pipeline Chấm điểm và Phản hồi Tự động C++")
+    parser.add_argument("--dataset", type=str, default="./dataset",
+                        help="Đường dẫn thư mục gốc dataset")
+    parser.add_argument("--split", type=str, default="public_test",
+                        choices=["train", "test", "public_test", "private_test"],
+                        help="Split dữ liệu cần chạy")
+    parser.add_argument("--task", type=str, required=True, choices=["1", "2", "3", "all"],
+                        help="Task cần chạy: 1 (Rubric), 2 (Taxonomy), 3 (Feedback) hoặc all")
+    parser.add_argument("--model-path", type=str, default="unsloth/Qwen2.5-Coder-7B-Instruct",
+                        help="Tên hoặc đường dẫn base model")
+    parser.add_argument("--adapter-path", type=str, default=None,
+                        help="Đường dẫn LoRA adapter (ví dụ: ./models/lora_adapter_v3)")
+    parser.add_argument("--output-dir", type=str, default="./submission",
+                        help="Thư mục lưu file submission")
+    parser.add_argument("--heuristic", action="store_true",
+                        help="Chạy chế độ Heuristic baseline (không cần GPU / không load model)")
+    parser.add_argument("--no-quant", action="store_true",
+                        help="Không dùng 4-bit quantization khi load LLM")
+    parser.add_argument("--no-sandbox", action="store_true",
+                        help="Tắt compiler sandbox g++")
+    parser.add_argument("--no-differential", action="store_true",
+                        help="Tắt differential testing (reference solution do LLM sinh) cho đề single_problem")
+    parser.add_argument("--cache-dir", type=str, default="./cache/differential",
+                        help="Thư mục cache bộ test sinh tự động theo đề")
+
+    args = parser.parse_args()
+    run_pipeline(args)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="C++ Code Grading Pipeline")
-    parser.add_argument("--dataset", type=str, default="./dataset",
-                        help="Path to dataset root directory")
-    parser.add_argument("--model-path", type=str, 
-                        default="unsloth/Qwen2.5-Coder-7B-Instruct",
-                        help="Base model path or HuggingFace repo")
-    parser.add_argument("--adapter-path", type=str, default=None,
-                        help="Path to LoRA adapter")
-    parser.add_argument("--task", type=int, required=True, choices=[1, 2, 3],
-                        help="Task to run: 1 (grading), 2 (taxonomy), 3 (feedback)")
-    parser.add_argument("--split", type=str, default="public_test",
-                        choices=["train", "test", "public_test", "private_test"],
-                        help="Dataset split to process")
-    parser.add_argument("--output-dir", type=str, default="./submission",
-                        help="Directory to save submission files")
-    args = parser.parse_args()
-    run_pipeline(args)
+    main()

@@ -3,49 +3,37 @@
 Chấm điểm và đánh giá bài nộp lập trình C++ của sinh viên:    
 - LLM Fine-tuned (Qwen2.5-Coder) với LoRA adapter để chấm điểm theo rubric chi tiết
 - Compiler Sandbox (g++) để xác thực biên dịch thực tế, đảm bảo tính chính xác
-- Ensemble Strategy kết hợp nhiều "judges" để tăng độ tin cậy
+- Differential testing: LLM sinh lời giải tham chiếu + test input, chạy code sinh viên để lấy pass-rate
 - Feedback Generator sinh phản hồi tiếng Việt theo 4 mức độ kiểm soát (từ gợi ý nhẹ đến lời giải đầy đủ)
 3 tasks chính:  
 - Task 1: Rubric Grading  
 Chấm điểm theo 6 tiêu chí (compilable, io_format, logic, edge_case, complexity, code_quality)  
 - Task 2: Error Classification  
-Phân loại lỗi theo taxonomy (Lỗi biên dịch, logic, vòng lặp, hàm, I/O, bộ nhớ, ...)  
+Phân loại lỗi theo đúng 10 nhãn chính thức của BTC: Lỗi biên dịch, Lỗi nhập/xuất, Lỗi logic, Lỗi vòng lặp, Lỗi mảng/chuỗi, Lỗi hàm, Lỗi edge case, Lỗi thuật toán, Lỗi hard-code, Lỗi style.  
 - Task 3: Feedback Generation  
-Sinh phản hồi sư phạm có kiểm soát mức độ chi tiết  
+Sinh phản hồi sư phạm tiếng Việt có kiểm soát mức độ chi tiết (Level 1 → 4), bám bằng chứng compiler + test thực thi, lọc code / cách sửa / sao chép.  
 
-## Thư mục
-prequisition/  
-├──  
-├── requirements.txt             # Các dependencies Python  
-├── main.py                      # Pipeline chính điều phối toàn bộ flow  
-├── dataset/                     # Thư mục chứa dataset (input)  
-│   └── lora_adapter_v3/         # LoRA adapter đã fine-tune  
-│      ├── private_test  
-│      ├── public_test  
-│       ├── task2_error_taxonomy.json  
-│       ├── task3_feedback.json  
-│       ├── exams.json  
-│       └── label_space.json  
-│      ├── train  
-│       ├── task2_error_taxonomy.json  
-│       ├── task3_feedback.json  
-│       ├── exams.json  
-│       └── label_space.json  
-├── models/                      # Thư mục chứa model weights  
-│   └── lora_adapter_v3/         # LoRA adapter đã fine-tune/ lấy tại output notebook  
-├── evaluation/  
-│   └── metrics.py               # Các hàm tính toán metric đánh giá  
-├── inference/  
-│   ├── grader.py                # Module chấm điểm chính (Task 1 + Task 2)  
-│   ├── ensemble.py              # Ensemble chiến lược kết hợp nhiều judges  
-│   └── feedback_gen.py          # Module sinh phản hồi (Task 3)  
-├── sandbox/  
-│   └── compiler.py              # C++ Compiler Sandbox (ground truth)  
-├── submission/  
-│   ├── task1/                   # submission task 1  
-│   ├── task2/                   # submission task 2  
-│   └── task3/                   # submission task 3  
-└── README.md                    # File hướng dẫn này 
+## Cấu trúc thư mục
+```
+python-slm-codegrading/
+├── requirements.txt             # Dependencies Python
+├── main.py                      # Pipeline chính điều phối toàn bộ luồng
+├── core/                        # Package lõi dùng chung (Single Source of Truth)
+│   ├── schema.py                # 10 nhãn taxonomy chuẩn BTC, rubric clamping, level parser
+│   └── data.py                  # Dataset loader hợp nhất cho 3 tasks
+├── dataset/                     # Dữ liệu train, public_test, private_test
+├── models/                      # Thư mục chứa LoRA adapter (ví dụ: lora_adapter_v3/)
+├── evaluation/
+│   └── metrics.py               # Metric QWK, MAE, Macro-F1, Level Compliance
+├── inference/
+│   ├── llm.py                   # Wrapper model + tokenizer + prompt-budget shortener
+│   ├── grader.py                # Module chấm điểm Task 1 (Rubric) & Task 2 (Taxonomy)
+│   └── feedback_gen.py          # Module sinh phản hồi Task 3 (bằng chứng + template theo Level)
+├── sandbox/
+│   └── cpp_compiler.py          # C++ Compiler Sandbox (g++ ground truth + MSVC compat)
+├── submission/                  # File nộp: taskX_submission.json & predictions.json
+└── README.md
+```
 
 ## Chạy trên kaggle
 chạy file notebook trên kaggle
@@ -82,22 +70,30 @@ lora_adapter_v3.zip -> models/
 ### Setup + Run
 ```bash 
 pip install -r requirements.txt
-python main.py --dataset ./dataset/sample_dataset --model-path unsloth/Qwen2.5-Coder-7B-Instruct --adapter-path ./models/lora_adapter_v3 --output predictions.json
 ``` 
 
 ### Chạy từng task trên public_test
-Task 1  
+#### 1. Chạy trên GPU (Kaggle / Local CUDA) với LoRA adapter:
+- **Task 1 (Rubric Grading)**:
+  ```bash
+  python main.py --dataset ./dataset --split public_test --task 1 --adapter-path ./models/lora_adapter_v3
+  ```
+- **Task 2 (Error Taxonomy)**:
+  ```bash
+  python main.py --dataset ./dataset --split public_test --task 2 --adapter-path ./models/lora_adapter_v3
+  ```
+- **Task 3 (Pedagogical Feedback)**:
+  ```bash
+  python main.py --dataset ./dataset --split public_test --task 3 --adapter-path ./models/lora_adapter_v3
+  ```
+
+#### 2. Chạy thử nghiệm nhanh bằng Heuristic (Không cần GPU):
 ```bash
-python main.py --dataset ./dataset --model-path unsloth/Qwen2.5-Coder-7B-Instruct --adapter-path ./models/lora_adapter_v3 --task 1 --split public_test --output-dir ./submission
+python main.py --dataset ./dataset --split public_test --task 1 --heuristic
+python main.py --dataset ./dataset --split public_test --task 2 --heuristic
+python main.py --dataset ./dataset --split public_test --task 3 --heuristic
 ```
-Task 2  
-```bash
-python main.py --dataset ./dataset --model-path unsloth/Qwen2.5-Coder-7B-Instruct --adapter-path ./models lora_adapter_v3 --task 2 --split public_test --output-dir ./submission
-```
-Task 3
-```bash
-python main.py --dataset ./dataset --model-path unsloth/Qwen2.5-Coder-7B-Instruct --adapter-path ./models/lora_adapter_v3 --task 3 --split public_test --output-dir ./submission
-```
+*Ghi chú: Output được tự động lưu đồng thời thành `taskX_submission.json` và `predictions.json` tại `submission/taskX/` để nộp trực tiếp lên Leaderboard.*
 
 ## Docs
 ### 1. main.py -> chạy Pipeline
@@ -169,32 +165,22 @@ code_quality (0-1) -> Code có sạch, dễ đọc không?
 
 ### 5. inference/feedback_gen.py - Feedback Generator (Task 3)
 💡 Ý tưởng:  
-Sinh phản hồi tiếng Việt cho sinh viên với 4 mức độ kiểm soát:  
-- Level 1: Gợi ý nhẹ nhàng, hướng tư duy. KHÔNG code, KHÔNG lời giải  
-- Level 2: Chỉ ra vị trí lỗi, KHÔNG code sửa hoàn chỉnh  
-- Level 3: Giải thích nguyên nhân + cách khắc phục, có thể có snippet nhỏ  
-- Level 4: Cung cấp lời giải mẫu hoàn chỉnh  
-🔄 Các bước chạy:  
-generate(code, statement, errors, level, max_retries=2):  
-- Gọi LLM để sinh feedback  
-- Kiểm tra level compliance bằng JEV Noul (nếu có) hoặc heuristic  
-- Nếu vi phạm → retry với prompt nghiêm khắc hơn (tối đa 2 lần)  
-- Nếu vẫn vi phạm → strip code blocks khỏi feedback  
-_generate_once(): Sinh feedback 1 lần với prompt cụ thể cho level  
-_heuristic_check(): Kiểm tra nhanh bằng keyword (ví dụ: #include, int main(), cout)  
-_strip_code(): Xóa các code blocks để đảm bảo compliance (dùng regex)  
-📊 Output:   
-```bash
-{
-    "feedback": "Bài làm tốt...",
-    "level": 2,
-    "level_compliant": true,
-    "compliance_score": 0.95,
-    "attempts": 1
-}
+Phản hồi bám bằng chứng khách quan, không để LLM tự do viết (tránh chép lại phản hồi train / khen sai):  
+- Nhãn `taxonomy_error` lấy từ kết quả chấm Task 2 (cùng một lần chấm).  
+- Không có lỗi → "Tốt." (giống phong cách giảng viên).  
+- Level 1: template báo có vấn đề theo nhóm lỗi, KHÔNG vị trí / nguyên nhân / code.  
+- Level 2: câu bằng chứng (dòng lỗi g++, test sai: input / cần in / chương trình in) + 1-2 câu vị trí & nguyên nhân do base model viết (tắt LoRA).  
+- Level 3+: như Level 2 + gợi ý hướng sửa bằng lời.  
+🔄 Kiểm tra câu do LLM sinh (bị loại → dùng câu nguyên nhân theo nhãn):  
+- chứa code / ký tự `` ` `` / cú pháp C++; Level 2 chứa cách sửa ("sửa thành", "thay ... bằng", ...)  
+- khen "không có lỗi" khi bài có lỗi; không phải tiếng Việt; gần trùng (≥ 0.6) một phản hồi train  
+`build_feedback_prompt` chỉ dùng để tạo dữ liệu fine-tune LoRA trong notebook.  
+📊 Output: chuỗi `feedback` tiếng Việt, ví dụ:  
+```text
+Chương trình sai 2/10 test tự động, ví dụ với input "153" cần in "True" nhưng chương trình in "False". Hàm tính lũy thừa ở dòng 9 trả về sai do ép kiểu về int. (Chẩn đoán: lỗi logic.)
 ```
 
-### 6. sandbox/compiler.py - C++ Compiler Sandbox
+### 6. sandbox/cpp_compiler.py - C++ Compiler Sandbox
 💡 Ý tưởng:  
 Cung cấp ground truth từ kết quả biên dịch thực tế bằng g++. Kiểm tra tính đúng đắn của code, giúp hệ thống không bị hallucination của LLM ảnh hưởng.   
 🔄 Các bước chạy:  
