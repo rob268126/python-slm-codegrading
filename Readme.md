@@ -36,7 +36,13 @@ python-slm-codegrading/
 ```
 
 ## Chạy trên kaggle
-chạy file notebook trên kaggle
+Chạy notebook trong đường dẫn *notebook/pipeline-cpp-grading-v5.ipynb*  
+Add Input -> add dataset cpp-grading-dataset-public 
+truyền đường dẫn vào tham số --dataset  
+```
+!python main.py --dataset /kaggle/input/cpp-grading-dataset-public --split public_test --task 1 --adapter-path ./models/lora_adapter_v3
+```
+
 ## Chạy trên máy
 ### Presiquisition (Compile C)
 g++ (Windows) for compile C
