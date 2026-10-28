@@ -13,12 +13,14 @@ Cách chạy:
 """
 from __future__ import annotations
 
+import kagglehub
 import argparse
 import json
 import os
 import pathlib
 import sys
 from typing import Dict, List, Optional
+from config import KAGGLE_DATASET_HANDLE, DATASET_ROOT
 
 # Đảm bảo import được các module trong repo
 REPO_ROOT = pathlib.Path(__file__).resolve().parent
@@ -49,6 +51,29 @@ from inference.feedback_gen import FeedbackGenerator
 from inference.grader import CppGrader, GradingResult
 from sandbox.cpp_compiler import find_gcc
 
+###########################################################################
+# Sync Kaggle Dataset 
+###########################################################################
+def auto_sync_kaggle_dataset(local_path: str) -> str:
+    """Tự đồng bộ dataset từ Kaggle về thư mục local."""
+    # 1. kaggle -> /kaggle/input/
+    if os.path.exists("/kaggle/input"):
+        kaggle_mount_path = f"/kaggle/input/{KAGGLE_DATASET_HANDLE.split('/')[-1]}"
+        if os.path.exists(kaggle_mount_path):
+            print(f"Dataset: {kaggle_mount_path}")
+            return kaggle_mount_path
+
+    # 2. local -> dataset/
+    if not os.path.exists(local_path) or not os.listdir(local_path):
+        print(f"Đường dẫn '{local_path}' trống -> tải '{KAGGLE_DATASET_HANDLE}'.")
+        try:
+            downloaded_path = kagglehub.dataset_download(KAGGLE_DATASET_HANDLE)
+            return downloaded_path
+        except Exception as e:
+            print(f"LỖI: {e}")
+            return local_path
+            
+    return local_path
 
 def export_submission(results: List[Dict], output_dir: str) -> str:
     """Xuất duy nhất file predictions.json chuẩn theo quy định nộp của BTC."""
@@ -137,6 +162,10 @@ def run_task3(feedback_gen: FeedbackGenerator, grader: CppGrader,
 
 def run_pipeline(args):
     """Điều phối toàn bộ quy trình."""
+
+    # Update Dataset 
+    args.dataset = auto_sync_kaggle_dataset(args.dataset)
+
     print("*" * 60)
     print("C++ SLM CODE GRADING PIPELINE")
     print(f"  Dataset  : {args.dataset}")
@@ -219,7 +248,7 @@ def run_pipeline(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Pipeline Chấm điểm và Phản hồi Tự động C++")
-    parser.add_argument("--dataset", type=str, default="./dataset",
+    parser.add_argument("--dataset", type=str, default=DATASET_ROOT,
                         help="Đường dẫn thư mục gốc dataset")
     parser.add_argument("--split", type=str, default="public_test",
                         choices=["train", "test", "public_test", "private_test"],
