@@ -225,3 +225,7 @@ models/
 # datasets (kaggle, non-public datasets)
 dataset/
 cache/
+
+submission/*
+
+docs/*

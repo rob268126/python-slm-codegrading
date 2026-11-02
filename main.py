@@ -218,9 +218,13 @@ def run_pipeline(args):
 
 
 def main():
+    default_dataset = "/kaggle/input/datasets/robviet/cpp-grading-dataset-public"
+    if not os.path.exists(default_dataset):
+        default_dataset = "./dataset"
+
     parser = argparse.ArgumentParser(description="Pipeline Chấm điểm và Phản hồi Tự động C++")
-    parser.add_argument("--dataset", type=str, default="./dataset",
-                        help="Đường dẫn thư mục gốc dataset")
+    parser.add_argument("--dataset", type=str, default=default_dataset,
+                        help="Đường dẫn thư mục gốc dataset (chứa train, public_test)")
     parser.add_argument("--split", type=str, default="public_test",
                         choices=["train", "test", "public_test", "private_test"],
                         help="Split dữ liệu cần chạy")
