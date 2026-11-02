@@ -42,7 +42,7 @@ python-slm-codegrading/
 
 ## Hướng dẫn chạy
 
-### 1. Chạy trên Kaggle (Khuyến nghị)
+### 1. Chạy trên Kaggle
 1. Mở notebook `notebook/pipeline-cpp-grading-v5.ipynb` trên Kaggle (GPU T4x2 hoặc P100).
 2. Add dataset tại đường dẫn: `/kaggle/input/datasets/robviet/cpp-grading-dataset-public` (gồm 2 thư mục `train` và `public_test`).
 3. Chạy toàn bộ notebook để **Fine-tune LoRA** $\rightarrow$ **Inference cả 3 tasks** $\rightarrow$ xuất `submission.zip`.
@@ -70,4 +70,3 @@ g++ --version  # Đảm bảo đã có g++ trong PATH (MSYS2 / MinGW trên Windo
   ```
 
 Kết quả được xuất tự động tại: `submission/task1/predictions.json`, `submission/task2/predictions.json`, và `submission/task3/predictions.json`.
-
