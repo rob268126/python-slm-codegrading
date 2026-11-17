@@ -232,11 +232,28 @@ class DifferentialTester:
         return report
 
 
+def _class_disagrees(present: List[List[dict]], keep: List[int], j: int, min_agree: int = 3) -> bool:
+    """Expected của test j nhiều khả năng sai nếu, trong nhóm sinh viên qua MỌI test khác, số bạn cùng in ra
+    một output khác expected nhiều hơn số bạn qua test j.
+
+    Lý do: expected do đa số lời giải tham chiếu (LLM) quyết định nên có thể sai đồng loạt; khi đó các bài làm
+    đúng ở mọi test khác sẽ cùng "trượt" test này với cùng một output. Chỉ dùng output của bài nộp, không dùng nhãn.
+    """
+    strong = [r for r in present if all(r[k].get("lenient_passed") for k in keep if k != j)]
+    passers = sum(1 for r in strong if r[j].get("lenient_passed"))
+    alt = Counter(r[j].get("actual") for r in strong
+                  if not r[j].get("lenient_passed") and not r[j].get("timed_out") and r[j].get("actual"))
+    if not alt:
+        return False
+    return alt.most_common(1)[0][1] >= max(min_agree, passers + 1)
+
+
 def filter_exam_reports(reports: List[Optional[List[dict]]], min_students: int = 5,
                         log: Callable[[str], None] = print, exam_id: str = "") -> List[Optional[List[dict]]]:
     """Kiểm tra chéo bộ test sinh tự động bằng chính bài làm của cả lớp (không cần nhãn).
 
     - Test mà KHÔNG sinh viên nào qua (kể cả so khớp lỏng) nhiều khả năng sai đề/sai ràng buộc -> bỏ.
+    - Test mà các bài "qua hết test khác" đồng loạt in cùng một output khác expected -> expected sai -> bỏ.
     - Nếu còn quá ít test hợp lệ -> bỏ toàn bộ bằng chứng thực thi của đề này (để LLM tự chấm).
     """
     present = [r for r in reports if r]
@@ -244,11 +261,12 @@ def filter_exam_reports(reports: List[Optional[List[dict]]], min_students: int =
         return reports
     n_tests = min(len(r) for r in present)
     keep = [j for j in range(n_tests) if any(r[j].get("lenient_passed") for r in present)]
+    keep = [j for j in keep if not _class_disagrees(present, keep, j)]
     if len(keep) < MIN_VALID_INPUTS:
         log(f"  [Diff] {exam_id}: chỉ {len(keep)}/{n_tests} test có sinh viên qua -> bỏ bằng chứng thực thi")
         return [None] * len(reports)
     if len(keep) < n_tests:
-        log(f"  [Diff] {exam_id}: bỏ {n_tests - len(keep)} test không sinh viên nào qua")
+        log(f"  [Diff] {exam_id}: bỏ {n_tests - len(keep)} test nghi sai (không ai qua hoặc cả lớp đồng thuận output khác)")
     return [[r[j] for j in keep] if r else r for r in reports]
 
 
