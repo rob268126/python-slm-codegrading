@@ -47,6 +47,10 @@ class Submission:
     feedback_level: int = DEFAULT_FEEDBACK_LEVEL
     # None = chưa biết (dataset không có compile_log và chưa chạy sandbox).
     compile_failed: Optional[bool] = None
+    # multi_problem: metadata câu hỏi + file dữ liệu của đề (để chạy thử từng câu) và kết quả chạy thử.
+    problems: List[dict] = field(default_factory=list)
+    data_path: Optional[str] = None
+    problem_report: Optional[List[dict]] = None
 
     @property
     def is_multi_problem(self) -> bool:
@@ -128,6 +132,15 @@ def _read_code(root: Path, code_file: str) -> Optional[str]:
     return None
 
 
+def _data_path(root: Path, data_file: Optional[str]) -> Optional[str]:
+    if not data_file:
+        return None
+    for path in (root / "data_files" / data_file, root / data_file):
+        if path.exists():
+            return str(path)
+    return None
+
+
 def build_submissions(data: SplitData) -> List[Submission]:
     """Gộp input của task1/2/3 theo sample_id thành danh sách Submission (thứ tự chuẩn)."""
     inputs: Dict[str, dict] = {}
@@ -157,5 +170,7 @@ def build_submissions(data: SplitData) -> List[Submission]:
             test_report=inp.get("test_report"),
             feedback_level=parse_level(inp.get("target_feedback_level")),
             compile_failed=has_compile_error(compile_log) if compile_log else None,
+            problems=exam.get("problems") or [],
+            data_path=_data_path(data.root, exam.get("data_file")),
         ))
     return submissions

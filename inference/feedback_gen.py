@@ -204,6 +204,37 @@ def _evidence_sentences(ev: dict, compile_failed: bool) -> List[str]:
     return out
 
 
+def _multi_evidence(report: Optional[Sequence[dict]]) -> List[str]:
+    """Nhận xét từng câu của đề multi_problem theo kết quả chạy thử (văn phong "P1 đúng; P2 ..." của giảng viên).
+
+    Chỉ nêu hiện tượng (đúng / chưa làm / crash / lặp vô tận / đọc thiếu bản ghi), không nêu cách sửa.
+    Câu không xác định được (không đủ đồng thuận) thì bỏ qua.
+    """
+    if not report:
+        return []
+    texts = {
+        "ok": "{p} đúng",
+        "missing": "{p} chưa làm",
+        "timeout": "{p} lặp vô tận (chương trình không dừng)",
+    }
+    parts = []
+    for i, r in enumerate(report):
+        p, v = r["pid"], r["verdict"]
+        if v == "crash":
+            parts.append(f"{p} làm chương trình dừng đột ngột" +
+                         (" do lỗi khi chuyển chuỗi sang số" if r.get("exception") else ""))
+        elif v == "wrong" and i == 0:
+            parts.append(f"{p} chưa đọc đủ toàn bộ bản ghi trong file")
+        elif v in texts:
+            parts.append(texts[v].format(p=p))
+    if not parts:
+        return []
+    text = "; ".join(parts)
+    if report[0]["verdict"] not in ("ok", "unknown"):
+        text += f"; {report[0]['pid']} là câu tiên quyết nên các câu sau không được chấm"
+    return [text[0].upper() + text[1:] + "."]
+
+
 def _all_tests_passed(ev: dict) -> bool:
     tests = ev["tests"]
     return bool(tests) and tests["exact"] == tests["total"]
@@ -316,6 +347,8 @@ class FeedbackGenerator:
             return f"Bài làm còn {_labels_text(labels)}. Em kiểm tra lại {areas_text} nhé."
 
         evidence = _evidence_sentences(ev, compile_failed)
+        if not evidence and not compile_failed and sub.is_multi_problem:
+            evidence = _multi_evidence(sub.problem_report)
         diagnosis = self._llm_diagnosis(sub, level, labels, evidence)
         parts = list(evidence)
         if diagnosis:

@@ -17,7 +17,7 @@ import shutil
 import subprocess
 import tempfile
 from functools import lru_cache
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 MULTI_PROBLEM = "multi_problem"
 
@@ -192,16 +192,21 @@ class CompiledProgram:
     def ok(self) -> bool:
         return self.compile_result.get("compile_success") is True
 
-    def run(self, stdin: str = "", timeout: float = 2.0) -> dict:
-        """Trả về {output, returncode, timed_out}. stdout bị cắt ở MAX_OUTPUT_BYTES."""
-        res = {"output": "", "returncode": None, "timed_out": False}
+    @property
+    def workdir(self) -> Optional[str]:
+        return self._tmp.name if self._tmp is not None else None
+
+    def run(self, stdin: str = "", timeout: float = 2.0, args: Sequence[str] = ()) -> dict:
+        """Trả về {output, stderr, returncode, timed_out}. stdout/stderr bị cắt ở MAX_OUTPUT_BYTES."""
+        res = {"output": "", "stderr": "", "returncode": None, "timed_out": False}
         if not self.ok or self._tmp is None:
             return res
         out_path = os.path.join(self._tmp.name, "stdout.txt")
+        err_path = os.path.join(self._tmp.name, "stderr.txt")
         try:
-            with open(out_path, "wb") as out_f:
-                proc = subprocess.Popen([_binary_name(self._tmp.name)], stdin=subprocess.PIPE,
-                                        stdout=out_f, stderr=subprocess.DEVNULL, cwd=self._tmp.name)
+            with open(out_path, "wb") as out_f, open(err_path, "wb") as err_f:
+                proc = subprocess.Popen([_binary_name(self._tmp.name), *args], stdin=subprocess.PIPE,
+                                        stdout=out_f, stderr=err_f, cwd=self._tmp.name)
                 try:
                     proc.communicate(stdin.encode("utf-8"), timeout=timeout)
                     res["returncode"] = proc.returncode
@@ -211,6 +216,8 @@ class CompiledProgram:
                     res["timed_out"] = True
             with open(out_path, "rb") as f:
                 res["output"] = f.read(MAX_OUTPUT_BYTES).decode("utf-8", errors="replace")
+            with open(err_path, "rb") as f:
+                res["stderr"] = f.read(MAX_OUTPUT_BYTES).decode("utf-8", errors="replace")
         except OSError:
             pass
         return res
