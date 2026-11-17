@@ -229,3 +229,6 @@ cache/
 submission/*
 
 docs/*
+# datasets thật (không được đưa lên repo) + bản vá submission thử nghiệm
+datasets/
+submission_patched/

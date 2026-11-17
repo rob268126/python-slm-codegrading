@@ -13,7 +13,6 @@ Cách chạy:
 """
 from __future__ import annotations
 
-import kagglehub
 import argparse
 import json
 import os
@@ -67,6 +66,7 @@ def auto_sync_kaggle_dataset(local_path: str) -> str:
     if not os.path.exists(local_path) or not os.listdir(local_path):
         print(f"Đường dẫn '{local_path}' trống -> tải '{KAGGLE_DATASET_HANDLE}'.")
         try:
+            import kagglehub  # chỉ cần khi phải tải dataset
             downloaded_path = kagglehub.dataset_download(KAGGLE_DATASET_HANDLE)
             return downloaded_path
         except Exception as e:

@@ -18,8 +18,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from core.data import Submission, has_compile_error
 from core.schema import (
+    LABEL_ALGORITHM,
+    LABEL_ARRAY,
     LABEL_COMPILE,
-    LABEL_HARDCODE,
+    LABEL_EDGE,
+    LABEL_FUNCTION,
     LABEL_IO,
     LABEL_LOGIC,
     LABEL_LOOP,
@@ -29,6 +32,7 @@ from core.schema import (
     Rubric,
     normalize_labels,
 )
+from inference.static_rules import static_labels
 from sandbox.cpp_compiler import compile_cpp
 from sandbox.differential import filter_exam_reports, summarize_report
 
@@ -55,50 +59,76 @@ class LLMJudgeResponse(BaseModel):
         return data
 
 
-def apply_test_evidence(rubric, errors: List[str], report) -> List[str]:
-    """Ghi đè các chiều rubric phụ thuộc hành vi chạy bằng pass-rate của test thực thi. Trả về taxonomy đã chỉnh.
+# Nhãn bị chặn ở output: "Lỗi edge case" có 0/32 mẫu train (nhãn suy biến). Đoán nhãn không có trong gold
+# chỉ tạo false positive -> kéo F1 của chính nhãn đó và micro-F1 xuống.
+SUPPRESSED_LABELS = {LABEL_EDGE}
 
-    logic/edge_case dùng pass-rate "lỏng" (đúng đáp án, bỏ qua lời nhắc/hoa-thường) để lỗi định dạng
-    không kéo theo mất điểm logic; io_format chỉ bị trừ khi pass-rate chính xác thấp hơn pass-rate lỏng.
+# Giảng viên chấm đề single_problem theo vài "rubric mẫu" rời rạc (train EX02, 17/17 bài khớp một mẫu dưới đây):
+#   đúng hết = 10, chỉ sai định dạng = 9, sai một phần = 7 (logic 2, edge 1), chưa xong/sai hết = 2-3,
+#   lỗi biên dịch = 1 (vẫn giữ code_quality). code_quality không nằm trong mẫu, lấy theo LLM/heuristic.
+#                    (compilable, io_format, logic, edge_case, complexity)
+SINGLE_PROTOTYPES = (
+    (1, 1, 4, 2, 1),  # đúng hết
+    (1, 0, 4, 2, 1),  # đúng đáp án, sai định dạng output
+    (1, 1, 2, 1, 1),  # sai một phần
+    (1, 0, 0, 0, 1),  # sai hết / output sai hoàn toàn
+    (1, 0, 0, 0, 0),  # chưa hoàn thiện / không dừng
+)
+_PROTO_DIMS = ("compilable", "io_format", "logic", "edge_case", "complexity")
+
+
+def snap_single_rubric(rubric) -> None:
+    """Đưa rubric (bài single_problem đã biên dịch được) về rubric mẫu gần nhất (L1) của giảng viên."""
+    if not rubric.compilable:
+        return
+    cur = tuple(getattr(rubric, d) for d in _PROTO_DIMS)
+    best = min(SINGLE_PROTOTYPES, key=lambda p: (sum(abs(a - b) for a, b in zip(cur, p)), SINGLE_PROTOTYPES.index(p)))
+    for d, v in zip(_PROTO_DIMS, best):
+        setattr(rubric, d, v)
+
+
+def apply_test_evidence(rubric, errors: List[str], report) -> List[str]:
+    """Ghi đè rubric single_problem theo kết quả test thực thi, ánh xạ thẳng về rubric mẫu của giảng viên.
+
+    Dùng pass-rate "lỏng" (đúng đáp án, bỏ qua lời nhắc/hoa-thường) cho logic để lỗi định dạng không kéo theo
+    mất điểm logic; io_format = 0 khi pass-rate chính xác thấp hơn pass-rate lỏng.
+    Không còn chia logic 3/2/1 theo pass-rate: giảng viên cho cùng một mẫu 7 điểm cho mọi bài sai một phần.
     """
     stats = summarize_report(report)
     if stats is None or not getattr(rubric, "compilable", 1):
         return errors
     rate, exact_rate, timeouts = stats["lenient_rate"], stats["rate"], stats["timeouts"]
     errors = list(errors)
+    format_only = exact_rate < rate
 
     if rate == 1.0:
-        rubric.logic = 4
-        rubric.edge_case = max(rubric.edge_case, 1)
-        rubric.complexity = 1
-        errors = [e for e in errors if e != LABEL_LOGIC]
-    elif rate >= 0.75:
-        rubric.logic = 3
-        rubric.edge_case = min(rubric.edge_case, 1)
-        errors.append(LABEL_LOGIC)
-    elif rate >= 0.5:
-        rubric.logic = 2
-        rubric.edge_case = min(rubric.edge_case, 1)
-        errors.append(LABEL_LOGIC)
+        proto = (1, 0, 4, 2, 1) if format_only else (1, 1, 4, 2, 1)
+        errors = [e for e in errors if e not in (LABEL_LOGIC, LABEL_LOOP)]
+        if format_only:
+            errors.append(LABEL_IO)
+        else:
+            errors = [e for e in errors if e != LABEL_IO]
+    elif rate > 0:
+        proto = (1, 0, 2, 1, 1) if format_only else (1, 1, 2, 1, 1)
+        if format_only:
+            errors.append(LABEL_IO)
+        if not any(e in errors for e in (LABEL_LOOP, LABEL_FUNCTION, LABEL_ALGORITHM, LABEL_ARRAY)):
+            errors.append(LABEL_LOGIC)  # chỉ thêm khi LLM chưa chỉ ra loại lỗi cụ thể hơn
     else:
-        rubric.logic = 1 if rate > 0 else 0
-        rubric.edge_case = 0
+        proto = (1, 0, 0, 0, 0) if timeouts == stats["total"] else (1, 0, 0, 0, 1)
         errors.append(LABEL_LOGIC)
 
-    if rate == 0:
-        rubric.io_format = 0
-    elif exact_rate < rate:
-        rubric.io_format = 0
-        errors.append(LABEL_IO)
-    elif exact_rate == 1.0:
-        rubric.io_format = 1
-        errors = [e for e in errors if e != LABEL_IO]
+    for d, v in zip(_PROTO_DIMS, proto):
+        setattr(rubric, d, v)
 
     if timeouts:
         # Input sinh tự động đều nhỏ (< 300 ký tự) -> timeout gần như chắc chắn là vòng lặp vô hạn.
-        rubric.complexity = 0
         errors.append(LABEL_LOOP)
     return errors
+
+
+def finalize_labels(labels: Sequence[str]) -> List[str]:
+    return [l for l in normalize_labels(labels) if l not in SUPPRESSED_LABELS]
 
 
 class CppGrader:
@@ -203,16 +233,19 @@ class CppGrader:
         """Heuristic chấm điểm dựa trên compiler sandbox, test report và phân tích mã nguồn."""
         sub = self._ensure_compile_info(sub)
         code = sub.code or ""
-        code_lower = code.lower()
 
         # Kiểm tra compile
         is_failed = sub.compile_failed is True or has_compile_error(sub.compile_log)
 
         if is_failed or len(code.strip()) == 0:
+            # Train: lỗi biên dịch ở đề single_problem vẫn giữ code_quality=1 (3/3 bài EX02),
+            # đề multi_problem thì 0 toàn bộ (3/3 bài EX01).
+            keep_quality = not sub.is_multi_problem and len(code.strip()) >= 30
+            static = static_labels(code, sub.is_multi_problem) if code.strip() else []
             return GradingResult(
                 sample_id=sub.sample_id,
-                rubric={"compilable": 0, "code_quality": 0 if len(code.strip()) < 30 else 1},
-                taxonomy_error=[LABEL_COMPILE],
+                rubric={"compilable": 0, "code_quality": 1 if keep_quality else 0},
+                taxonomy_error=finalize_labels([LABEL_COMPILE] + static),
                 rationale="Code không biên dịch được hoặc rỗng theo kết quả compiler.",
                 compiler_verified=True,
             )
@@ -222,11 +255,8 @@ class CppGrader:
             "compilable": 1, "io_format": 1, "logic": 2,
             "edge_case": 1, "complexity": 1, "code_quality": 1
         }
-        errors: List[str] = []
-
-        # Heuristic phát hiện lỗi logic / vòng lặp
-        if "while(true)" in code_lower or "while(1)" in code_lower:
-            errors.append(LABEL_LOOP)
+        # Luật tĩnh: vòng lặp con trỏ không dịch chuyển, trả về mảng cục bộ, hard-code dữ liệu (multi_problem)
+        errors: List[str] = static_labels(code, sub.is_multi_problem)
 
         # Phát hiện bài nộp bị comment toàn bộ hoặc tỷ lệ comment bất thường (Lỗi style)
         non_empty_lines = [l.strip() for l in code.splitlines() if l.strip()]
@@ -235,12 +265,6 @@ class CppGrader:
             errors.append(LABEL_STYLE)
             rubric_dict["code_quality"] = 0
 
-        # Hard-code tên file csv trong các hàm của đề multi_problem (main tự viết để test thì được phép)
-        if sub.is_multi_problem:
-            body = re.split(r"\bint\s+main\s*\(", code, maxsplit=1)[0]
-            if re.search(r'"[^"\n]*\.csv"', body, re.IGNORECASE) or re.search(r'#\s*include\s*"[^"\n]*\.csv"', code, re.IGNORECASE):
-                errors.append(LABEL_HARDCODE)
-
         res = GradingResult(
             sample_id=sub.sample_id,
             rubric=rubric_dict,
@@ -248,10 +272,18 @@ class CppGrader:
             rationale="Heuristic grading based on compiler log and code analysis.",
             compiler_verified=True,
         )
-        if sub.test_report:
-            res.taxonomy_error = normalize_labels(apply_test_evidence(res.rubric, res.taxonomy_error, sub.test_report))
-            res.total_score = res.rubric.total_score
+        self._finalize(res, sub)
         return res
+
+    def _finalize(self, res: GradingResult, sub: Submission) -> None:
+        """Bước cuối chung: bằng chứng test -> rubric mẫu (single_problem), chặn nhãn suy biến, đồng bộ tổng."""
+        compiled = bool(res.rubric.compilable)
+        if compiled and sub.test_report:
+            res.taxonomy_error = apply_test_evidence(res.rubric, res.taxonomy_error, sub.test_report)
+        elif compiled and not sub.is_multi_problem:
+            snap_single_rubric(res.rubric)
+        res.taxonomy_error = finalize_labels(res.taxonomy_error)
+        res.total_score = res.rubric.total_score
 
     @staticmethod
     def _salvage_json(text: str):
@@ -305,11 +337,11 @@ class CppGrader:
         except Exception:
             return heuristic_res
 
-        # Bổ sung các nhãn lỗi code-level khách quan (hard-code, style) nếu phát hiện trong code
+        # Bổ sung các nhãn lỗi code-level khách quan (luật tĩnh + style) phát hiện trong code
         combined_errors = set(judge_res.taxonomy_error)
-        for err in heuristic_res.taxonomy_error:
-            if err in (LABEL_HARDCODE, LABEL_STYLE):
-                combined_errors.add(err)
+        combined_errors.update(static_labels(sub.code, sub.is_multi_problem))
+        if LABEL_STYLE in heuristic_res.taxonomy_error:
+            combined_errors.add(LABEL_STYLE)
 
         res = GradingResult(
             sample_id=sub.sample_id,
@@ -318,10 +350,9 @@ class CppGrader:
             rationale=clean[:300],
         )
         res.apply_compiler_ground_truth(is_compile_failed)
-        if not is_compile_failed and sub.test_report:
-            res.taxonomy_error = normalize_labels(
-                apply_test_evidence(res.rubric, res.taxonomy_error, sub.test_report))
-            res.total_score = res.rubric.total_score
+        if is_compile_failed:
+            res.rubric.code_quality = heuristic_res.rubric.code_quality
+        self._finalize(res, sub)
         return res
 
     def grade_one(self, sub: Submission) -> GradingResult:
