@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import List, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -32,7 +33,7 @@ from core.schema import (
     Rubric,
     normalize_labels,
 )
-from inference.static_rules import static_labels
+from inference.static_rules import pointer_loop_without_advance, static_labels
 from sandbox.cpp_compiler import compile_cpp
 from sandbox.differential import filter_exam_reports, summarize_report
 
@@ -127,6 +128,47 @@ def apply_test_evidence(rubric, errors: List[str], report) -> List[str]:
     return errors
 
 
+# Quy định chấm của đề multi_problem: "Nhận 0 điểm nếu ... tạo vòng lặp vô hạn". Train EX01-S106/S107
+# (2/2 bài có vòng lặp vô hạn) đều được chấm đúng mẫu này: vẫn biên dịch được, nhưng mất toàn bộ phần chạy.
+MULTI_INFINITE_LOOP_RUBRIC = {"compilable": 1, "io_format": 1, "logic": 0, "edge_case": 0,
+                              "complexity": 0, "code_quality": 0}
+
+
+def apply_infinite_loop_policy(res: GradingResult) -> None:
+    for d, v in MULTI_INFINITE_LOOP_RUBRIC.items():
+        setattr(res.rubric, d, v)
+    if LABEL_LOOP not in res.taxonomy_error:
+        res.taxonomy_error = list(res.taxonomy_error) + [LABEL_LOOP]
+
+
+# P1 (đọc file) crash vì ném exception khi đổi chuỗi -> số (stoi/stof): train EX01-S113/S114 (2/2) đều được
+# chấm mẫu này + nhãn "Lỗi hàm" (câu tiên quyết hỏng -> không chấm các câu sau).
+MULTI_P1_EXCEPTION_RUBRIC = {"compilable": 1, "io_format": 0, "logic": 0, "edge_case": 0,
+                             "complexity": 0, "code_quality": 0}
+
+
+def apply_problem_report(res: GradingResult, report) -> None:
+    """Áp kết quả chạy thử từng câu (multi_problem). Chỉ dùng các tín hiệu có căn cứ rõ trong train:
+    crash do exception đổi kiểu -> Lỗi hàm; P1 crash do exception -> mẫu P1 hỏng; lặp vô hạn (khi P1 chạy đúng,
+    để dữ liệu rác từ P1 sai không gây timeout giả) -> mẫu vòng lặp vô hạn.
+    """
+    if not report:
+        return
+    by_pid = {r["pid"]: r for r in report}
+    first = report[0]
+    labels = list(res.taxonomy_error)
+    if any(r["verdict"] == "crash" and r["exception"] for r in report):
+        labels.append(LABEL_FUNCTION)
+    res.taxonomy_error = labels
+    if first["verdict"] == "crash" and first["exception"]:
+        for d, v in MULTI_P1_EXCEPTION_RUBRIC.items():
+            setattr(res.rubric, d, v)
+        return
+    p1_ok = first["verdict"] == "ok"
+    if first["verdict"] == "timeout" or (p1_ok and any(r["verdict"] == "timeout" for r in by_pid.values())):
+        apply_infinite_loop_policy(res)
+
+
 def finalize_labels(labels: Sequence[str]) -> List[str]:
     return [l for l in normalize_labels(labels) if l not in SUPPRESSED_LABELS]
 
@@ -134,17 +176,20 @@ def finalize_labels(labels: Sequence[str]) -> List[str]:
 class CppGrader:
     """Module chấm điểm C++ sử dụng LLM Fine-tuned (Qwen2.5-Coder LoRA) kết hợp Compiler Sandbox."""
 
-    def __init__(self, llm=None, use_compiler_sandbox: bool = True, tester=None, report_in_prompt: bool = False):
+    def __init__(self, llm=None, use_compiler_sandbox: bool = True, tester=None, report_in_prompt: bool = False,
+                 multi_tester=None):
         """
         Args:
             llm: Instance của inference.llm.LLM (hoặc None để chạy heuristic baseline).
             use_compiler_sandbox: Nếu True và submission chưa có compile_log, sẽ gọi g++ biên dịch thực tế.
             tester: DifferentialTester sinh test_report khi dataset không cung cấp (chỉ đề single_problem).
             report_in_prompt: Đưa test_report vào prompt LLM (chỉ bật khi adapter được train với test_report).
+            multi_tester: MultiProblemTester chạy thử từng câu của đề multi_problem (cần data_file của đề).
         """
         self.llm = llm
         self.use_compiler_sandbox = use_compiler_sandbox
         self.tester = tester
+        self.multi_tester = multi_tester
         self.report_in_prompt = report_in_prompt
         self._reported: set = set()
 
@@ -158,6 +203,7 @@ class CppGrader:
 
     def prepare_test_reports(self, submissions: Sequence[Submission]) -> None:
         """Compile + chạy test cho cả lô trước, rồi kiểm tra chéo bộ test theo từng đề (bỏ test sai)."""
+        self.prepare_problem_reports(submissions)
         if self.tester is None:
             return
         by_exam: dict = {}
@@ -171,6 +217,28 @@ class CppGrader:
             filtered = filter_exam_reports([s.test_report for s in subs], exam_id=exam_id)
             for s, rep in zip(subs, filtered):
                 s.test_report = rep
+
+    def prepare_problem_reports(self, submissions: Sequence[Submission]) -> None:
+        """Đề multi_problem: chạy thử từng câu P1..Pk trên file dữ liệu của đề cho các bài biên dịch được."""
+        if self.multi_tester is None:
+            return
+        by_exam: dict = {}
+        for sub in submissions:
+            if not sub.is_multi_problem or not sub.data_path or not sub.problems:
+                continue
+            self._ensure_compile_info(sub)
+            if sub.compile_failed is False and (sub.code or "").strip():
+                by_exam.setdefault(sub.exam_id, []).append(sub)
+        for exam_id, subs in by_exam.items():
+            exam = {"exam_id": exam_id, "statement": subs[0].statement, "problems": subs[0].problems}
+            try:
+                report = self.multi_tester.evaluate_exam(exam, {s.sample_id: s.code for s in subs},
+                                                         Path(subs[0].data_path))
+            except Exception as exc:  # đề có định dạng lạ -> bỏ qua bằng chứng chạy thử, giữ kết quả LLM
+                print(f"  [Multi] {exam_id}: lỗi khi chạy thử ({type(exc).__name__}: {exc}) -> bỏ qua")
+                continue
+            for s in subs:
+                s.problem_report = report.get(s.sample_id)
 
     def build_prompt(self, statement: str, code: str, compile_log: str, test_report: str = "") -> str:
         """Xây dựng prompt ChatML format khớp với định dạng lúc huấn luyện LoRA."""
@@ -282,6 +350,10 @@ class CppGrader:
             res.taxonomy_error = apply_test_evidence(res.rubric, res.taxonomy_error, sub.test_report)
         elif compiled and not sub.is_multi_problem:
             snap_single_rubric(res.rubric)
+        elif compiled and sub.is_multi_problem:
+            apply_problem_report(res, sub.problem_report)
+            if pointer_loop_without_advance(sub.code):
+                apply_infinite_loop_policy(res)
         res.taxonomy_error = finalize_labels(res.taxonomy_error)
         res.total_score = res.rubric.total_score
 

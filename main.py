@@ -201,7 +201,12 @@ def run_pipeline(args):
     if llm is not None and not args.no_differential:
         from sandbox.differential import DifferentialTester
         tester = DifferentialTester(llm, cache_dir=args.cache_dir)
-    grader = CppGrader(llm=llm, use_compiler_sandbox=not args.no_sandbox, tester=tester)
+    multi_tester = None
+    if not args.no_sandbox and find_gcc() is not None:
+        from sandbox.multi_harness import MultiProblemTester
+        multi_tester = MultiProblemTester()
+    grader = CppGrader(llm=llm, use_compiler_sandbox=not args.no_sandbox, tester=tester,
+                       multi_tester=multi_tester)
 
     train_feedback_file = str(pathlib.Path(args.dataset) / "train" / "task3_feedback.json")
     feedback_gen = FeedbackGenerator(llm=llm, train_feedback_file=train_feedback_file)
